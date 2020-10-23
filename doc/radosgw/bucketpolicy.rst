@@ -32,6 +32,18 @@ For example, one may use s3cmd to set or delete a policy thus::
   $ s3cmd setpolicy examplepol s3://happybucket
   $ s3cmd delpolicy s3://happybucket
 
+To target all users under a specific tenant use this Principal:
+
+  ...
+  "Principal": {"AWS": ["arn:aws:iam::usfolks:user/*"]},
+  ...
+
+And also for targeting all authenticated users use this Principal:
+
+  ...
+  "Principal": {"AWS": ["arn:aws:iam:::user/*"]},
+  ...
+
 
 Limitations
 ===========

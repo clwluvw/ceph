@@ -659,6 +659,11 @@ bool rgw::auth::LocalApplier::is_identity(const idset_t& ids) const {
       if (id.get_id() == user_info.user_id.id) {
         return true;
       }
+
+      if (!user_info.user_id.empty() && id.get_id() == "*") {
+        return true;
+      }
+
       std::string wildcard_subuser = user_info.user_id.id;
       wildcard_subuser.append(":*");
       if (wildcard_subuser == id.get_id()) {
