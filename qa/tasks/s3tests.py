@@ -83,11 +83,6 @@ def _config_user(s3tests_conf, section, user):
         ''.join(random.choice(string.ascii_uppercase) for i in range(20)))
     s3tests_conf[section].setdefault('secret_key',
         six.ensure_str(base64.b64encode(os.urandom(40))))
-    s3tests_conf[section].setdefault('totp_serial',
-        ''.join(random.choice(string.digits) for i in range(10)))
-    s3tests_conf[section].setdefault('totp_seed',
-        six.ensure_str(base64.b32encode(os.urandom(40))))
-    s3tests_conf[section].setdefault('totp_seconds', '5')
 
 
 @contextlib.contextmanager
@@ -98,7 +93,7 @@ def create_users(ctx, config):
     assert isinstance(config, dict)
     log.info('Creating rgw users...')
     testdir = teuthology.get_testdir(ctx)
-    users = {'s3 main': 'foo', 's3 alt': 'bar', 's3 tenant': 'testx$tenanteduser'}
+    users = {'s3 main': 'foo', 's3 alt': 'bar'}
     for client in config['clients']:
         s3tests_conf = config['s3tests_conf'][client]
         s3tests_conf.setdefault('fixtures', {})
@@ -106,15 +101,13 @@ def create_users(ctx, config):
         for section, user in users.items():
             _config_user(s3tests_conf, section, '{user}.{client}'.format(user=user, client=client))
             log.debug('Creating user {user} on {host}'.format(user=s3tests_conf[section]['user_id'], host=client))
-            cluster_name, daemon_type, client_id = teuthology.split_role(client)
-            client_with_id = daemon_type + '.' + client_id
-            ctx.cluster.only(client).run(
+            first_mon = teuthology.get_first_mon(ctx, config)
+            ctx.cluster.only(first_mon).run(
                 args=[
                     'adjust-ulimits',
                     'ceph-coverage',
                     '{tdir}/archive/coverage'.format(tdir=testdir),
                     'radosgw-admin',
-                    '-n', client_with_id,
                     'user', 'create',
                     '--uid', s3tests_conf[section]['user_id'],
                     '--display-name', s3tests_conf[section]['display_name'],
@@ -122,24 +115,6 @@ def create_users(ctx, config):
                     '--secret', s3tests_conf[section]['secret_key'],
                     '--email', s3tests_conf[section]['email'],
                     '--caps', 'user-policy=*',
-                    '--cluster', cluster_name,
-                ],
-            )
-            ctx.cluster.only(client).run(
-                args=[
-                    'adjust-ulimits',
-                    'ceph-coverage',
-                    '{tdir}/archive/coverage'.format(tdir=testdir),
-                    'radosgw-admin',
-                    '-n', client_with_id,
-                    'mfa', 'create',
-                    '--uid', s3tests_conf[section]['user_id'],
-                    '--totp-serial', s3tests_conf[section]['totp_serial'],
-                    '--totp-seed', s3tests_conf[section]['totp_seed'],
-                    '--totp-seconds', s3tests_conf[section]['totp_seconds'],
-                    '--totp-window', '8',
-                    '--totp-seed-type', 'base32',
-                    '--cluster', cluster_name,
                 ],
             )
     try:
@@ -148,19 +123,16 @@ def create_users(ctx, config):
         for client in config['clients']:
             for user in users.values():
                 uid = '{user}.{client}'.format(user=user, client=client)
-                cluster_name, daemon_type, client_id = teuthology.split_role(client)
-                client_with_id = daemon_type + '.' + client_id
-                ctx.cluster.only(client).run(
+                first_mon = teuthology.get_first_mon(ctx, config)
+                ctx.cluster.only(first_mon).run(
                     args=[
                         'adjust-ulimits',
                         'ceph-coverage',
                         '{tdir}/archive/coverage'.format(tdir=testdir),
                         'radosgw-admin',
-                        '-n', client_with_id,
                         'user', 'rm',
                         '--uid', uid,
                         '--purge-data',
-                        '--cluster', cluster_name,
                         ],
                     )
 
@@ -195,35 +167,6 @@ def configure(ctx, config):
             assert website_endpoint.website_dns_name, \
                     's3tests: no dns-s3website-name for rgw_website_server {}'.format(website_role)
             s3tests_conf['DEFAULT']['s3website_domain'] = website_endpoint.website_dns_name
-
-        if hasattr(ctx, 'barbican'):
-            properties = properties['barbican']
-            if properties is not None and 'kms_key' in properties:
-                if not (properties['kms_key'] in ctx.barbican.keys):
-                    raise ConfigError('Key '+properties['kms_key']+' not defined')
-
-                if not (properties['kms_key2'] in ctx.barbican.keys):
-                    raise ConfigError('Key '+properties['kms_key2']+' not defined')
-
-                key = ctx.barbican.keys[properties['kms_key']]
-                s3tests_conf['DEFAULT']['kms_keyid'] = key['id']
-
-                key = ctx.barbican.keys[properties['kms_key2']]
-                s3tests_conf['DEFAULT']['kms_keyid2'] = key['id']
-
-        elif hasattr(ctx, 'vault'):
-            properties = properties['vault_%s' % ctx.vault.engine]
-            s3tests_conf['DEFAULT']['kms_keyid'] = properties['key_path']
-            s3tests_conf['DEFAULT']['kms_keyid2'] = properties['key_path2']
-
-        else:
-            # Fallback scenario where it's the local (ceph.conf) kms being tested
-            s3tests_conf['DEFAULT']['kms_keyid'] = 'testkey-1'
-            s3tests_conf['DEFAULT']['kms_keyid2'] = 'testkey-2'
-
-        slow_backend = properties.get('slow_backend')
-        if slow_backend:
-            s3tests_conf['fixtures']['slow backend'] = slow_backend
 
         (remote,) = ctx.cluster.only(client).remotes.keys()
         remote.run(
@@ -290,10 +233,6 @@ def run_tests(ctx, config):
         # the 'requests' library comes with its own ca bundle to verify ssl
         # certificates - override that to use the system's ca bundle, which
         # is where the ssl task installed this certificate
-        if remote.os.package_type == 'deb':
-            args += ['REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt']
-        else:
-            args += ['REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt']
         # civetweb > 1.8 && beast parsers are strict on rfc2616
         attrs = ["!fails_on_rgw", "!lifecycle_expiration", "!fails_strict_rfc2616"]
         if client_config.get('calling-format') != 'ordinary':
@@ -431,13 +370,13 @@ def task(ctx, config):
                 'DEFAULT':
                     {
                     'port'      : endpoint.port,
-                    'is_secure' : endpoint.cert is not None,
+                    'is_secure' : endpoint.use_https,
                     'api_name'  : 'default',
                     },
                 'fixtures' : {},
                 's3 main'  : {},
                 's3 alt'   : {},
-		's3 tenant': {},
+                's3 tenant': {},
                 }
             )
 
