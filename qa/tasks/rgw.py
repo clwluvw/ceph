@@ -107,3 +107,5 @@ def task(ctx, config):
     log.debug("client list is {}".format(clients))
 
     ctx.rgw.role_endpoints = assign_endpoints(ctx, config, use_https)
+
+    yield
