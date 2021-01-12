@@ -1,4 +1,0 @@
-overrides:
-  rgw:
-    client.0:
-      use_https: true
