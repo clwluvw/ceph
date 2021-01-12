@@ -249,50 +249,6 @@ def run_tests(ctx, config):
     yield
 
 @contextlib.contextmanager
-def scan_for_leaked_encryption_keys(ctx, config):
-    """
-    Scan radosgw logs for the encryption keys used by s3tests to
-    verify that we're not leaking secrets.
-
-    :param ctx: Context passed to task
-    :param config: specific configuration information
-    """
-    assert isinstance(config, dict)
-
-    try:
-        yield
-    finally:
-        # x-amz-server-side-encryption-customer-key
-        s3test_customer_key = 'pO3upElrwuEXSoFwCfnZPdSsmt/xWeFa0N9KgDijwVs='
-
-        log.debug('Scanning radosgw logs for leaked encryption keys...')
-        procs = list()
-        for client, client_config in config.items():
-            if not client_config.get('scan_for_encryption_keys', True):
-                continue
-            cluster_name, daemon_type, client_id = teuthology.split_role(client)
-            client_with_cluster = '.'.join((cluster_name, daemon_type, client_id))
-            (remote,) = ctx.cluster.only(client).remotes.keys()
-            proc = remote.run(
-                args=[
-                    'grep',
-                    '--binary-files=text',
-                    s3test_customer_key,
-                    '/var/log/ceph/rgw.{client}.log'.format(client=client_with_cluster),
-                ],
-                wait=False,
-                check_status=False,
-            )
-            procs.append(proc)
-
-        for proc in procs:
-            proc.wait()
-            if proc.returncode == 1: # 1 means no matches
-                continue
-            log.error('radosgw log is leaking encryption keys!')
-            raise Exception('radosgw log is leaking encryption keys')
-
-@contextlib.contextmanager
 def task(ctx, config):
     """
     Run the s3-tests suite against rgw.
@@ -385,7 +341,6 @@ def task(ctx, config):
                 s3tests_conf=s3tests_conf,
                 )),
         lambda: run_tests(ctx=ctx, config=config),
-        lambda: scan_for_leaked_encryption_keys(ctx=ctx, config=config),
         ):
         pass
     yield
