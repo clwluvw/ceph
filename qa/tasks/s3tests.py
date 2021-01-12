@@ -228,7 +228,7 @@ def run_tests(ctx, config):
         # certificates - override that to use the system's ca bundle, which
         # is where the ssl task installed this certificate
         # civetweb > 1.8 && beast parsers are strict on rfc2616
-        attrs = ["!fails_on_rgw", "!lifecycle_expiration", "!fails_strict_rfc2616"]
+        attrs = ["!fails_on_rgw", "!lifecycle_expiration", "!fails_strict_rfc2616", "!encryption"]
         if client_config.get('calling-format') != 'ordinary':
             attrs += ['!fails_with_subdomain']
         args += [
