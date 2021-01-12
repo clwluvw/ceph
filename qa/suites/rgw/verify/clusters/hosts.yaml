@@ -1,3 +1,5 @@
+nuke-on-error: false
+
 roles:
   - [mon.mon01, mgr.mon01]
   - [mon.mon02, mgr.mon02]
