@@ -104,9 +104,6 @@ def create_users(ctx, config):
             first_mon = teuthology.get_first_mon(ctx, config)
             ctx.cluster.only(first_mon).run(
                 args=[
-                    'adjust-ulimits',
-                    'ceph-coverage',
-                    '{tdir}/archive/coverage'.format(tdir=testdir),
                     'radosgw-admin',
                     'user', 'create',
                     '--uid', s3tests_conf[section]['user_id'],
@@ -126,9 +123,6 @@ def create_users(ctx, config):
                 first_mon = teuthology.get_first_mon(ctx, config)
                 ctx.cluster.only(first_mon).run(
                     args=[
-                        'adjust-ulimits',
-                        'ceph-coverage',
-                        '{tdir}/archive/coverage'.format(tdir=testdir),
                         'radosgw-admin',
                         'user', 'rm',
                         '--uid', uid,
