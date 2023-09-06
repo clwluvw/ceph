@@ -576,7 +576,11 @@ int RGWHTTPClient::init_request(rgw_http_req_data *_req_data)
   req_data->h = h;
 
   curl_easy_setopt(easy_handle, CURLOPT_CUSTOMREQUEST, method.c_str());
-  curl_easy_setopt(easy_handle, CURLOPT_URL, url.c_str());
+  if (protocol == "unix") {
+    curl_easy_setopt(easy_handle, CURLOPT_UNIX_SOCKET_PATH, host.c_str());
+  } else {
+    curl_easy_setopt(easy_handle, CURLOPT_URL, url.c_str());
+  }
   curl_easy_setopt(easy_handle, CURLOPT_NOPROGRESS, 1L);
   curl_easy_setopt(easy_handle, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(easy_handle, CURLOPT_HEADERFUNCTION, receive_http_header);
