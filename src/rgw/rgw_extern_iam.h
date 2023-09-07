@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "rgw_perf_counters.h"
+#include "common/Clock.h"
 #include "rgw_common.h"
 #include "rgw_arn.h"
 #include "rgw_op.h"
@@ -34,6 +36,10 @@ private:
         }
 
         return true;
+    }
+
+    inline void measure_latency(utime_t& start_time) {
+        perfcounter->tinc(l_rgw_extern_iam_lat, (ceph_clock_now() - start_time));
     }
 
 public:

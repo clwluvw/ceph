@@ -16,6 +16,7 @@ int RGWExternIAMAuthorize::eval(const DoutPrefixProvider *dpp,
                                 boost::optional<const rgw::auth::Identity&> ida,
                                 rgw::IAM::Effect& effect)
 {
+  auto start_time = ceph_clock_now();
   bufferlist bl;
   RGWHTTPTransceiver req(cct, "POST", addr(), &bl);
 
@@ -45,12 +46,14 @@ int RGWExternIAMAuthorize::eval(const DoutPrefixProvider *dpp,
   int ret = req.process(null_yield);
   if (unlikely(ret < 0)) {
     ldpp_dout(dpp, 0) << "ERROR: External IAM process error:" << bl.c_str() << " ret:" << ret << dendl;
+    measure_latency(start_time);
     return -ERR_INTERNAL_ERROR;
   }
 
   JSONParser parser;
   if (unlikely(!parser.parse(bl.c_str(), bl.length()))) {
     ldpp_dout(dpp, 0) << "ERROR: External IAM parse error: malformed json: " << bl.c_str() << dendl;
+    measure_latency(start_time);
     return -ERR_INTERNAL_ERROR;
   }
 
@@ -59,16 +62,20 @@ int RGWExternIAMAuthorize::eval(const DoutPrefixProvider *dpp,
     auto res = val.str.c_str();
     if (strcmp(res, "Allow") == 0) {
       effect = rgw::IAM::Effect::Allow;
+      measure_latency(start_time);
       return 0;
     } else if (strcmp(res, "Pass") == 0) {
       effect = rgw::IAM::Effect::Pass;
+      measure_latency(start_time);
       return 0;
     } else if (strcmp(res, "Deny") == 0) {
       effect = rgw::IAM::Effect::Deny;
+      measure_latency(start_time);
       return 0;
     }
   }
 
+  measure_latency(start_time);
   ldpp_dout(dpp, 0) << "ERROR: External IAM unknown json response:" << bl.c_str() << dendl;
   return -ERR_INTERNAL_ERROR;
 }
