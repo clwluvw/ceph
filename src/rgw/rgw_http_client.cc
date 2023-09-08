@@ -576,11 +576,7 @@ int RGWHTTPClient::init_request(rgw_http_req_data *_req_data)
   req_data->h = h;
 
   curl_easy_setopt(easy_handle, CURLOPT_CUSTOMREQUEST, method.c_str());
-  if (protocol == "unix") {
-    curl_easy_setopt(easy_handle, CURLOPT_UNIX_SOCKET_PATH, host.c_str());
-  } else {
-    curl_easy_setopt(easy_handle, CURLOPT_URL, url.c_str());
-  }
+  curl_easy_setopt(easy_handle, CURLOPT_URL, url.c_str());
   curl_easy_setopt(easy_handle, CURLOPT_NOPROGRESS, 1L);
   curl_easy_setopt(easy_handle, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(easy_handle, CURLOPT_HEADERFUNCTION, receive_http_header);
@@ -594,6 +590,9 @@ int RGWHTTPClient::init_request(rgw_http_req_data *_req_data)
   curl_easy_setopt(easy_handle, CURLOPT_READFUNCTION, send_http_data);
   curl_easy_setopt(easy_handle, CURLOPT_READDATA, (void *)req_data);
   curl_easy_setopt(easy_handle, CURLOPT_BUFFERSIZE, cct->_conf->rgw_curl_buffersize);
+  if (!unix_socket.empty()) {
+    curl_easy_setopt(easy_handle, CURLOPT_UNIX_SOCKET_PATH, unix_socket.c_str());
+  }
   if (send_data_hint || is_upload_request(method)) {
     curl_easy_setopt(easy_handle, CURLOPT_UPLOAD, 1L);
   }

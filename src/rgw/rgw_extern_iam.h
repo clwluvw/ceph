@@ -59,6 +59,10 @@ public:
         return cct->_conf->rgw_extern_iam_verify_ssl;
     }
 
+    const string& unix_socket() {
+        return cct->_conf->rgw_extern_iam_unix_socket;
+    }
+
     int eval(const DoutPrefixProvider *dpp,
              const rgw::IAM::Environment& env,
              const rgw::ARN& resource, uint64_t op,

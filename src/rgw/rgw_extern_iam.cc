@@ -22,6 +22,7 @@ int RGWExternIAMAuthorize::eval(const DoutPrefixProvider *dpp,
 
   req.set_headers(headers);
   req.set_verify_ssl(verify_ssl());
+  req.set_unix_socket(unix_socket());
 
   JSONFormatter jf;
   jf.open_object_section("");

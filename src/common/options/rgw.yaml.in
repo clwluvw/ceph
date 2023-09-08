@@ -3872,7 +3872,14 @@ options:
 - name: rgw_extern_iam_addr
   type: str
   level: advanced
-  desc: External IAM address. Can be unix or http(s)
+  desc: HTTP(S) External IAM address
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_extern_iam_unix_socket
+  type: str
+  level: advanced
+  desc: Unix Socket for External IAM connectivity
   services:
   - rgw
   with_legacy: true
