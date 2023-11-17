@@ -27,6 +27,7 @@ uint64_t aws_response_handler::get_processed_size()
 void aws_response_handler::update_processed_size(uint64_t value)
 {
   processed_size += value;
+  s->usage_data.bytes_processed = processed_size;
 }
 
 uint64_t aws_response_handler::get_total_bytes_returned()
@@ -37,6 +38,7 @@ uint64_t aws_response_handler::get_total_bytes_returned()
 void aws_response_handler::update_total_bytes_returned(uint64_t value)
 {
   total_bytes_returned = value;
+  s->usage_data.bytes_returned = total_bytes_returned;
 }
 
 void aws_response_handler::push_header(const char* header_name, const char* header_value)
@@ -725,24 +727,22 @@ void RGWSelectObj_ObjStore_S3::execute(optional_yield y)
     } else {
       ldout(s->cct, 10) << "S3select: complete query with success " << dendl;
     }
-    } else { 
-	//CSV or JSON processing
-	if (m_scan_range_ind) {
+  } else {
+    //CSV or JSON processing
+    if (m_scan_range_ind) {
+      m_requested_range = (m_end_scan_sz - m_start_scan_sz);
 
-	  m_requested_range = (m_end_scan_sz - m_start_scan_sz);
-	    
-	  if(m_is_trino_request){
-	  // fetch more than requested(m_scan_offset), that additional bytes are scanned for end of row, 
-	  // thus the additional length will be processed, and no broken row for Trino.
-	  // assumption: row is smaller than m_scan_offset. (a different approach is to request for additional range)
-	    range_request(m_start_scan_sz, m_requested_range + m_scan_offset, nullptr, y);
-	  } else {
-	    range_request(m_start_scan_sz, m_requested_range, nullptr, y);
-	  }
-
-	} else {
-	  RGWGetObj::execute(y);
-	}
+      if (m_is_trino_request){
+        // fetch more than requested(m_scan_offset), that additional bytes are scanned for end of row,
+        // thus the additional length will be processed, and no broken row for Trino.
+        // assumption: row is smaller than m_scan_offset. (a different approach is to request for additional range)
+        range_request(m_start_scan_sz, m_requested_range + m_scan_offset, nullptr, y);
+      } else {
+        range_request(m_start_scan_sz, m_requested_range, nullptr, y);
+      }
+    } else {
+      RGWGetObj::execute(y);
+    }
   }//if (m_parquet_type)
 }
 
@@ -975,14 +975,14 @@ int RGWSelectObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t ofs, off_
     m_object_size_for_processing = s->obj_size;
   }
   if (m_scan_range_ind == true){
-      if (m_end_scan_sz == -1){
-       	m_end_scan_sz = s->obj_size;
-      }
-      if (static_cast<uint64_t>((m_end_scan_sz - m_start_scan_sz))>s->obj_size){ //in the case user provides range bigger than object-size
-	m_object_size_for_processing = s->obj_size;
-      } else {
-	m_object_size_for_processing = m_end_scan_sz - m_start_scan_sz;
-      }
+    if (m_end_scan_sz == -1){
+      m_end_scan_sz = s->obj_size;
+    }
+    if (static_cast<uint64_t>((m_end_scan_sz - m_start_scan_sz))>s->obj_size) { //in the case user provides range bigger than object-size
+      m_object_size_for_processing = s->obj_size;
+    } else {
+      m_object_size_for_processing = m_end_scan_sz - m_start_scan_sz;
+    }
   }
   if (!m_aws_response_handler.is_set()) {
     m_aws_response_handler.set(s, this);
@@ -998,4 +998,3 @@ int RGWSelectObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t ofs, off_
   }
   return csv_processing(bl,ofs,len);
 }
-

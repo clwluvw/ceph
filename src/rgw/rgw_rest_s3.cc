@@ -1494,6 +1494,8 @@ static void dump_usage_categories_info(Formatter *formatter, const rgw_usage_log
     encode_json("Category", uiter->first, formatter);
     encode_json("BytesSent", usage.bytes_sent, formatter);
     encode_json("BytesReceived", usage.bytes_received, formatter);
+    encode_json("BytesProcessed", usage.bytes_processed, formatter);
+    encode_json("BytesReturned", usage.bytes_returned, formatter);
     encode_json("Ops", usage.ops, formatter);
     encode_json("SuccessfulOps", usage.successful_ops, formatter);
     formatter->close_section(); // Entry
@@ -1581,6 +1583,8 @@ void RGWGetUsage_ObjStore_S3::send_response()
        formatter->open_object_section("Total");
        encode_json("BytesSent", total_usage.bytes_sent, formatter);
        encode_json("BytesReceived", total_usage.bytes_received, formatter);
+       encode_json("BytesProcessed", total_usage.bytes_processed, formatter);
+       encode_json("BytesReturned", total_usage.bytes_returned, formatter);
        encode_json("Ops", total_usage.ops, formatter);
        encode_json("SuccessfulOps", total_usage.successful_ops, formatter);
        formatter->close_section(); // total

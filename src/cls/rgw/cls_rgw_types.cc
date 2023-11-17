@@ -698,6 +698,8 @@ void rgw_usage_data::generate_test_instances(list<rgw_usage_data*>& o)
   rgw_usage_data *s = new rgw_usage_data;
   s->bytes_sent = 1024;
   s->bytes_received = 1024;
+  s->bytes_processed = 1024;
+  s->bytes_returned = 1024;
   s->ops = 2;
   s->successful_ops = 1;
   o.push_back(s);
@@ -708,6 +710,8 @@ void rgw_usage_data::dump(Formatter *f) const
 {
   f->dump_int("bytes_sent", bytes_sent);
   f->dump_int("bytes_received", bytes_received);
+  f->dump_int("bytes_processed", bytes_processed);
+  f->dump_int("bytes_returned", bytes_returned);
   f->dump_int("ops", ops);
   f->dump_int("successful_ops", successful_ops);
 }
@@ -755,6 +759,8 @@ void rgw_usage_log_entry::dump(Formatter *f) const
   f->open_object_section("total_usage");
   f->dump_unsigned("bytes_sent", total_usage.bytes_sent);
   f->dump_unsigned("bytes_received", total_usage.bytes_received);
+  f->dump_unsigned("bytes_processed", total_usage.bytes_processed);
+  f->dump_unsigned("bytes_returned", total_usage.bytes_returned);
   f->dump_unsigned("ops", total_usage.ops);
   f->dump_unsigned("successful_ops", total_usage.successful_ops);
   f->close_section();
@@ -767,6 +773,8 @@ void rgw_usage_log_entry::dump(Formatter *f) const
       f->dump_string("category", it->first.c_str());
       f->dump_unsigned("bytes_sent", total_usage.bytes_sent);
       f->dump_unsigned("bytes_received", total_usage.bytes_received);
+      f->dump_unsigned("bytes_processed", total_usage.bytes_processed);
+      f->dump_unsigned("bytes_returned", total_usage.bytes_returned);
       f->dump_unsigned("ops", total_usage.ops);
       f->dump_unsigned("successful_ops", total_usage.successful_ops);
       f->close_section();
@@ -778,13 +786,15 @@ void rgw_usage_log_entry::dump(Formatter *f) const
 void rgw_usage_log_entry::generate_test_instances(list<rgw_usage_log_entry *> &o)
 {
   rgw_usage_log_entry *entry = new rgw_usage_log_entry;
-  rgw_usage_data usage_data{1024, 2048};
+  rgw_usage_data usage_data{1024, 2048, 8192, 4096};
   entry->owner = rgw_user("owner");
   entry->payer = rgw_user("payer");
   entry->bucket = "bucket";
   entry->epoch = 1234;
   entry->total_usage.bytes_sent = usage_data.bytes_sent;
   entry->total_usage.bytes_received = usage_data.bytes_received;
+  entry->total_usage.bytes_processed = usage_data.bytes_processed;
+  entry->total_usage.bytes_returned = usage_data.bytes_returned;
   entry->total_usage.ops = usage_data.ops;
   entry->total_usage.successful_ops = usage_data.successful_ops;
   entry->usage_map["get_obj"] = usage_data;

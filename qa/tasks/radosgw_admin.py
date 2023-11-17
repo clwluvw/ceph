@@ -57,19 +57,22 @@ def usage_acc_findsum2(summaries, user, add=True):
     if not add:
         return None
     e = {'user': user, 'categories': [],
-        'total': {'bytes_received': 0,
-            'bytes_sent': 0, 'ops': 0, 'successful_ops': 0 }}
+        'total': {
+            'bytes_received': 0, 'bytes_sent': 0, 'bytes_processed': 0, 'bytes_returned': 0,
+            'ops': 0, 'successful_ops': 0 }}
     summaries.append(e)
     return e
-def usage_acc_update2(x, out, b_in, err):
+def usage_acc_update2(x, out, b_in, b_proc, b_ret, err):
     x['bytes_sent'] += b_in
     x['bytes_received'] += out
+    x['bytes_processed'] += b_proc
+    x['bytes_returned'] += b_ret
     x['ops'] += 1
     if not err:
         x['successful_ops'] += 1
 def usage_acc_validate_fields(r, x, x2, what):
     q=[]
-    for field in ['bytes_sent', 'bytes_received', 'ops', 'successful_ops']:
+    for field in ['bytes_sent', 'bytes_received', 'bytes_processed', 'bytes_returned', 'ops', 'successful_ops']:
         try:
             if x2[field] < x[field]:
                 q.append("field %s: %d < %d" % (field, x2[field], x[field]))
@@ -100,28 +103,29 @@ class usage_acc:
                 return x
         if not add:
                 return None
-        x = {'bytes_received': 0, 'category': cat,
-            'bytes_sent': 0, 'ops': 0, 'successful_ops': 0 }
+        x = {'bytes_received': 0, 'category': cat, 'bytes_sent': 0,
+             'bytes_processed': 0, 'bytes_returned': 0,
+             'ops': 0, 'successful_ops': 0 }
         c.append(x)
         return x
-    def update(self, c, cat, user, out, b_in, err):
+    def update(self, c, cat, user, out, b_in, b_proc, b_ret, err):
         x = self.c2x(c, cat)
-        usage_acc_update2(x, out, b_in, err)
+        usage_acc_update2(x, out, b_in, b_proc, b_ret, err)
         if not err and cat == 'create_bucket' and 'owner' not in x:
             x['owner'] = user
-    def make_entry(self, cat, bucket, user, out, b_in, err):
+    def make_entry(self, cat, bucket, user, out, b_in, b_proc, b_ret, err):
         if cat == 'create_bucket' and err:
                 return
         e = self.findentry(user)
         b = self.e2b(e, bucket)
-        self.update(b['categories'], cat, user, out, b_in, err)
+        self.update(b['categories'], cat, user, out, b_in, b_proc, b_ret, err)
         s = self.findsum(user)
         x = self.c2x(s['categories'], cat)
-        usage_acc_update2(x, out, b_in, err)
+        usage_acc_update2(x, out, b_in, b_proc, b_ret, err)
         x = s['total']
-        usage_acc_update2(x, out, b_in, err)
+        usage_acc_update2(x, out, b_in, b_proc, b_ret, err)
     def generate_make_entry(self):
-        return lambda cat,bucket,user,out,b_in,err: self.make_entry(cat, bucket, user, out, b_in, err)
+        return lambda cat,bucket,user,out,b_in,b_proc,b_ret,err: self.make_entry(cat, bucket, user, out, b_in, b_proc, b_ret, err)
     def get_usage(self):
         return self.results
     def compare_results(self, results):
@@ -217,7 +221,7 @@ class requestlog_queue():
     def clear(self):
         with self.q.mutex:
             self.q.queue.clear()
-    def log_and_clear(self, cat, bucket, user, add_entry = None):
+    def log_and_clear(self, cat, bucket, user, b_proc = 0, b_ret = 0, add_entry = None):
         while not self.q.empty():
             j = self.q.get()
             bytes_out = 0
@@ -231,7 +235,7 @@ class requestlog_queue():
                      % (cat, bucket, user, bytes_out, bytes_in, j['e']))
             if add_entry == None:
                 add_entry = self.adder
-            add_entry(cat, bucket, user, bytes_out, bytes_in, j['e'])
+            add_entry(cat, bucket, user, bytes_out, bytes_in, b_proc, b_ret, j['e'])
 
 def create_presigned_url(conn, method, bucket_name, key_name, expiration):
     return conn.generate_url(expires_in=expiration,

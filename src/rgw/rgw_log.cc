@@ -226,21 +226,19 @@ static void log_usage(req_state *s, const string& op_name)
   string p = payer.to_str();
   rgw_usage_log_entry entry(u, p, bucket_name);
 
-  uint64_t bytes_sent = ACCOUNTING_IO(s)->get_bytes_sent();
-  uint64_t bytes_received = ACCOUNTING_IO(s)->get_bytes_received();
+  s->usage_data.bytes_sent = ACCOUNTING_IO(s)->get_bytes_sent();
+  s->usage_data.bytes_received = ACCOUNTING_IO(s)->get_bytes_received();
 
-  rgw_usage_data data(bytes_sent, bytes_received);
-
-  data.ops = 1;
+  s->usage_data.ops = 1;
   if (!s->is_err())
-    data.successful_ops = 1;
+    s->usage_data.successful_ops = 1;
 
   ldpp_dout(s, 30) << "log_usage: bucket_name=" << bucket_name
 	<< " tenant=" << s->bucket_tenant
-	<< ", bytes_sent=" << bytes_sent << ", bytes_received="
-	<< bytes_received << ", success=" << data.successful_ops << dendl;
+	<< ", bytes_sent=" << s->usage_data.bytes_sent << ", bytes_received="
+	<< s->usage_data.bytes_received << ", success=" << s->usage_data.successful_ops << dendl;
 
-  entry.add(op_name, data);
+  entry.add(op_name, s->usage_data);
 
   utime_t ts = ceph_clock_now();
 

@@ -23,6 +23,8 @@ static void dump_usage_categories_info(Formatter *formatter, const rgw_usage_log
     formatter->dump_string("category", uiter->first);
     formatter->dump_unsigned("bytes_sent", usage.bytes_sent);
     formatter->dump_unsigned("bytes_received", usage.bytes_received);
+    formatter->dump_unsigned("bytes_processed", usage.bytes_processed);
+    formatter->dump_unsigned("bytes_returned", usage.bytes_returned);
     formatter->dump_unsigned("ops", usage.ops);
     formatter->dump_unsigned("successful_ops", usage.successful_ops);
     formatter->close_section(); // entry
@@ -134,6 +136,8 @@ int RGWUsage::show(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver,
       formatter->open_object_section("total");
       encode_json("bytes_sent", total_usage.bytes_sent, formatter);
       encode_json("bytes_received", total_usage.bytes_received, formatter);
+      encode_json("bytes_processed", total_usage.bytes_processed, formatter);
+      encode_json("bytes_returned", total_usage.bytes_returned, formatter);
       encode_json("ops", total_usage.ops, formatter);
       encode_json("successful_ops", total_usage.successful_ops, formatter);
       formatter->close_section(); // total

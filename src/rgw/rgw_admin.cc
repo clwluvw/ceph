@@ -7388,10 +7388,10 @@ next:
 
       if (show_log_sum) {
         formatter->open_object_section("log_sum");
-	formatter->dump_int("bytes_sent", agg_bytes_sent);
-	formatter->dump_int("bytes_received", agg_bytes_received);
-	formatter->dump_int("total_time", agg_time);
-	formatter->dump_int("total_entries", total_entries);
+        formatter->dump_int("bytes_sent", agg_bytes_sent);
+        formatter->dump_int("bytes_received", agg_bytes_received);
+        formatter->dump_int("total_time", agg_time);
+        formatter->dump_int("total_entries", total_entries);
         formatter->close_section();
       }
       formatter->close_section();
