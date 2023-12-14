@@ -923,6 +923,7 @@ if(WITH_RADOSGW)
   endif(WITH_RADOSGW_SELECT_PARQUET OR WITH_RADOSGW_ARROW_FLIGHT)
 
   add_subdirectory(libkmip)
+  add_subdirectory(libmaxminddb)
   add_subdirectory(rgw)
 endif(WITH_RADOSGW)
 

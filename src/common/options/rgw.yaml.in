@@ -1625,6 +1625,22 @@ options:
   - rgw_enable_usage_log
   - rgw_usage_log_flush_threshold
   with_legacy: true
+- name: rgw_usage_log_geoip_database
+  type: str
+  level: advanced
+  desc: GeoIP Database Path for usage log IP tag
+  services:
+  - rgw
+  see_also:
+  - rgw_usage_log_geoip_lookup_keys
+  with_legacy: true
+- name: rgw_usage_log_geoip_lookup_keys
+  type: str
+  level: advanced
+  desc: GeoIP Lookup keys
+  services:
+  - rgw
+  with_legacy: true
 - name: rgw_init_timeout
   type: int
   level: basic

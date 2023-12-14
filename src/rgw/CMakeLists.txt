@@ -415,6 +415,7 @@ target_link_libraries(rgw_a
     ${ARROW_LIBRARIES}
     ${ARROW_FLIGHT_LIBRARIES}
     OATH::OATH
+    maxminddb
   PUBLIC
     rgw_common
     spawn)

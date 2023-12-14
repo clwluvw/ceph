@@ -1499,21 +1499,21 @@ int RGWGetUsage_ObjStore_S3::get_params(optional_yield y)
 
 static void dump_usage_categories_info(Formatter *formatter, const rgw_usage_log_entry& entry, map<string, bool> *categories)
 {
-  formatter->open_array_section("categories");
-  map<string, rgw_usage_data>::const_iterator uiter;
-  for (uiter = entry.usage_map.begin(); uiter != entry.usage_map.end(); ++uiter) {
-    if (categories && !categories->empty() && !categories->count(uiter->first))
+  formatter->open_array_section("Entries");
+  map<rgw_usage_info, rgw_usage_data>::const_iterator uiter;
+  for (uiter = entry.usage_info_map.begin(); uiter != entry.usage_info_map.end(); ++uiter) {
+    if (categories && !categories->empty() && !categories->count(uiter->first.category))
       continue;
-    const rgw_usage_data& usage = uiter->second;
     formatter->open_object_section("Entry");
-    encode_json("Category", uiter->first, formatter);
-    encode_json("BytesSent", usage.bytes_sent, formatter);
-    encode_json("BytesReceived", usage.bytes_received, formatter);
-    encode_json("Ops", usage.ops, formatter);
-    encode_json("SuccessfulOps", usage.successful_ops, formatter);
+    formatter->open_object_section("Info");
+    uiter->first.dump(formatter);
+    formatter->close_section(); // Info
+    formatter->open_object_section("Data");
+    uiter->second.dump(formatter);
+    formatter->close_section(); // Data
     formatter->close_section(); // Entry
   }
-  formatter->close_section(); // Category
+  formatter->close_section(); // Entries
 }
 
 static void dump_usage_bucket_info(Formatter *formatter, const std::string& name, const bucket_meta_entry& entry)

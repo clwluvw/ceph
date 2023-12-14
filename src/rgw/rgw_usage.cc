@@ -11,23 +11,23 @@
 
 using namespace std;
 
-static void dump_usage_categories_info(Formatter *formatter, const rgw_usage_log_entry& entry, map<string, bool> *categories)
+static void dump_usage_categories_info(Formatter *formatter, const rgw_usage_log_entry& entry, map<string, bool> *categories) // TODO: maybe change the function name to entries
 {
-  formatter->open_array_section("categories");
-  map<string, rgw_usage_data>::const_iterator uiter;
-  for (uiter = entry.usage_map.begin(); uiter != entry.usage_map.end(); ++uiter) {
-    if (categories && !categories->empty() && !categories->count(uiter->first))
+  formatter->open_array_section("entries");
+  map<rgw_usage_info, rgw_usage_data>::const_iterator uiter;
+  for (uiter = entry.usage_info_map.begin(); uiter != entry.usage_info_map.end(); ++uiter) {
+    if (categories && !categories->empty() && !categories->count(uiter->first.category))
       continue;
-    const rgw_usage_data& usage = uiter->second;
     formatter->open_object_section("entry");
-    formatter->dump_string("category", uiter->first);
-    formatter->dump_unsigned("bytes_sent", usage.bytes_sent);
-    formatter->dump_unsigned("bytes_received", usage.bytes_received);
-    formatter->dump_unsigned("ops", usage.ops);
-    formatter->dump_unsigned("successful_ops", usage.successful_ops);
+    formatter->open_object_section("info");
+    uiter->first.dump(formatter);
+    formatter->close_section(); // info
+    formatter->open_object_section("data");
+    uiter->second.dump(formatter);
+    formatter->close_section(); // data
     formatter->close_section(); // entry
   }
-  formatter->close_section(); // categories
+  formatter->close_section(); // entries
 }
 
 int RGWUsage::show(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver,

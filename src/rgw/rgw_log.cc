@@ -20,6 +20,8 @@
 #include <chrono>
 #include <math.h>
 
+#include <libmaxminddb/include/maxminddb.h>
+
 #define dout_subsys ceph_subsys_rgw
 
 using namespace std;
@@ -101,6 +103,8 @@ class UsageLogger : public DoutPrefixProvider {
   ceph::mutex timer_lock = ceph::make_mutex("UsageLogger::timer_lock");
   SafeTimer timer;
   utime_t round_timestamp;
+  MMDB_s *mmdb;
+  char** mmdb_path;
 
   class C_UsageLogTimeout : public Context {
     UsageLogger *logger;
@@ -115,6 +119,26 @@ class UsageLogger : public DoutPrefixProvider {
   void set_timer() {
     timer.add_event_after(cct->_conf->rgw_usage_log_tick_interval, new C_UsageLogTimeout(this));
   }
+
+  void mmdb_init() {
+    if (!cct->_conf->rgw_usage_log_geoip_database.length() || !cct->_conf->rgw_usage_log_geoip_lookup_keys.length()) {
+      return;
+    }
+
+    mmdb = new MMDB_s;
+    int status = MMDB_open(cct->_conf->rgw_usage_log_geoip_database.c_str(), MMDB_MODE_MMAP, mmdb);
+    if (MMDB_SUCCESS != status) {
+      ldpp_dout(this, 0) << "ERROR: failed to open geoip database: " << MMDB_strerror(status) << dendl;
+    }
+
+    std::vector<std::string> strPath = get_str_vec(cct->_conf->rgw_usage_log_geoip_lookup_keys);
+    mmdb_path = new char*[strPath.size()];
+    for (size_t i = 0; i < strPath.size(); i++) {
+      mmdb_path[i] = new char[strPath[i].size() + 1];
+      strcpy(mmdb_path[i], strPath[i].c_str());
+    }
+    mmdb_path[strPath.size()] = NULL;
+  }
 public:
 
   UsageLogger(CephContext *_cct, rgw::sal::Driver* _driver) : cct(_cct), driver(_driver), num_entries(0), timer(cct, timer_lock) {
@@ -123,6 +147,7 @@ public:
     set_timer();
     utime_t ts = ceph_clock_now();
     recalc_round_timestamp(ts);
+    mmdb_init();
   }
 
   ~UsageLogger() {
@@ -130,6 +155,7 @@ public:
     flush();
     timer.cancel_all_events();
     timer.shutdown();
+    MMDB_close(mmdb);
   }
 
   void recalc_round_timestamp(utime_t& ts) {
@@ -174,6 +200,37 @@ public:
     driver->log_usage(this, old_map, null_yield);
   }
 
+  std::string get_ip_tag(const std::string& remote_addr) {
+    if (!mmdb)
+      return "";
+
+    int gai_error, mmdb_error;
+    MMDB_lookup_result_s result = MMDB_lookup_string(mmdb, remote_addr.c_str(), &gai_error, &mmdb_error);
+    if (gai_error != 0) {
+      ldpp_dout(this, 0) << "ERROR: failed to lookup geoip database: " << gai_strerror(gai_error) << dendl;
+      return "ERROR";
+    }
+    if (mmdb_error != MMDB_SUCCESS) {
+      ldpp_dout(this, 0) << "ERROR: failed to lookup geoip database: " << MMDB_strerror(mmdb_error) << dendl;
+      return "ERROR";
+    }
+    if (!result.found_entry) {
+      return "";
+    }
+
+    MMDB_entry_data_s entry_data;
+    int status = MMDB_aget_value(&result.entry, &entry_data, mmdb_path);
+    if (status != MMDB_SUCCESS) {
+      ldpp_dout(this, 0) << "ERROR: failed to lookup geoip database: " << MMDB_strerror(status) << dendl;
+      return "ERROR";
+    }
+
+    if (entry_data.has_data) {
+      return std::string(entry_data.utf8_string, entry_data.data_size);
+    }
+    return "";
+  }
+
   CephContext *get_cct() const override { return cct; }
   unsigned get_subsys() const override { return dout_subsys; }
   std::ostream& gen_prefix(std::ostream& out) const override { return out << "rgw UsageLogger: "; }
@@ -191,6 +248,8 @@ void rgw_log_usage_finalize()
   delete usage_logger;
   usage_logger = NULL;
 }
+
+
 
 static void log_usage(req_state *s, const string& op_name)
 {
@@ -226,6 +285,15 @@ static void log_usage(req_state *s, const string& op_name)
   string p = payer.to_str();
   rgw_usage_log_entry entry(u, p, bucket_name);
 
+  std::string remote_addr;
+  if (s->cct->_conf->rgw_remote_addr_param.length())
+    set_param_str(s, s->cct->_conf->rgw_remote_addr_param.c_str(), remote_addr);
+  else
+    set_param_str(s, "REMOTE_ADDR", remote_addr);
+  std::string ip_tag = usage_logger->get_ip_tag(remote_addr);
+
+  rgw_usage_info usage_info{op_name, ip_tag};
+
   uint64_t bytes_sent = ACCOUNTING_IO(s)->get_bytes_sent();
   uint64_t bytes_received = ACCOUNTING_IO(s)->get_bytes_received();
 
@@ -240,7 +308,7 @@ static void log_usage(req_state *s, const string& op_name)
 	<< ", bytes_sent=" << bytes_sent << ", bytes_received="
 	<< bytes_received << ", success=" << data.successful_ops << dendl;
 
-  entry.add(op_name, data);
+  entry.add(usage_info, data);
 
   utime_t ts = ceph_clock_now();
 
