@@ -712,6 +712,23 @@ void rgw_usage_data::dump(Formatter *f) const
   f->dump_int("successful_ops", successful_ops);
 }
 
+void rgw_usage_info::generate_test_instances(list<rgw_usage_info*>& o)
+{
+  rgw_usage_info *s = new rgw_usage_info;
+  s->category = "get_obj";
+  s->storage_class = "STANDARD";
+  s->ip_location = "US";
+  o.push_back(s);
+  o.push_back(new rgw_usage_info);
+}
+
+void rgw_usage_info::dump(Formatter *f) const
+{
+  f->dump_string("category", category);
+  f->dump_string("storage_class", storage_class);
+  f->dump_string("ip_location", ip_location);
+}
+
 void rgw_usage_log_info::generate_test_instances(list<rgw_usage_log_info*>& o)
 {
   rgw_usage_log_info *s = new rgw_usage_log_info;
@@ -752,23 +769,16 @@ void rgw_usage_log_entry::dump(Formatter *f) const
   f->dump_string("bucket", bucket);
   f->dump_unsigned("epoch", epoch);
 
-  f->open_object_section("total_usage");
-  f->dump_unsigned("bytes_sent", total_usage.bytes_sent);
-  f->dump_unsigned("bytes_received", total_usage.bytes_received);
-  f->dump_unsigned("ops", total_usage.ops);
-  f->dump_unsigned("successful_ops", total_usage.successful_ops);
-  f->close_section();
-
-  f->open_array_section("categories");
-  if (usage_map.size() > 0) {
-    for (auto it = usage_map.begin(); it != usage_map.end(); it++) {
-      const rgw_usage_data& total_usage = it->second;
+  f->open_array_section("entries");
+  if (usage_info_map.size() > 0) {
+    for (auto it = usage_info_map.begin(); it != usage_info_map.end(); it++) {
       f->open_object_section("entry");
-      f->dump_string("category", it->first.c_str());
-      f->dump_unsigned("bytes_sent", total_usage.bytes_sent);
-      f->dump_unsigned("bytes_received", total_usage.bytes_received);
-      f->dump_unsigned("ops", total_usage.ops);
-      f->dump_unsigned("successful_ops", total_usage.successful_ops);
+      f->open_object_section("info");
+      it->first.dump(f);
+      f->close_section();
+      f->open_object_section("data");
+      it->second.dump(f);
+      f->close_section();
       f->close_section();
     }
   }
@@ -779,15 +789,12 @@ void rgw_usage_log_entry::generate_test_instances(list<rgw_usage_log_entry *> &o
 {
   rgw_usage_log_entry *entry = new rgw_usage_log_entry;
   rgw_usage_data usage_data{1024, 2048};
+  rgw_usage_info usage_info{"get_obj", "STANDARD", "US"};
   entry->owner = rgw_user("owner");
   entry->payer = rgw_user("payer");
   entry->bucket = "bucket";
   entry->epoch = 1234;
-  entry->total_usage.bytes_sent = usage_data.bytes_sent;
-  entry->total_usage.bytes_received = usage_data.bytes_received;
-  entry->total_usage.ops = usage_data.ops;
-  entry->total_usage.successful_ops = usage_data.successful_ops;
-  entry->usage_map["get_obj"] = usage_data;
+  entry->usage_info_map[usage_info] = usage_data;
   o.push_back(entry);
   o.push_back(new rgw_usage_log_entry);
 }

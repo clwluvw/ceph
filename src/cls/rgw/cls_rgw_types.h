@@ -907,6 +907,42 @@ struct rgw_usage_data {
 };
 WRITE_CLASS_ENCODER(rgw_usage_data)
 
+struct rgw_usage_info {
+  std::string category;
+  std::string storage_class;
+  std::string ip_location;
+
+  rgw_usage_info() {}
+  rgw_usage_info(std::string category, std::string storage_class, std::string ip_location)
+    : category(category), storage_class(storage_class), ip_location(ip_location) {}
+  rgw_usage_info(std::string category, std::string storage_class)
+    : category(category), storage_class(storage_class) {}
+
+  void encode(ceph::buffer::list& bl) const {
+    ENCODE_START(1, 1, bl);
+    encode(category, bl);
+    encode(storage_class, bl);
+    encode(ip_location, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(ceph::buffer::list::const_iterator& bl) {
+    DECODE_START(1, bl);
+    decode(category, bl);
+    decode(storage_class, bl);
+    decode(ip_location, bl);
+    DECODE_FINISH(bl);
+  }
+
+  bool operator<(const rgw_usage_info& ui2) const {
+    return category.compare(ui2.category) < 0 ||
+      storage_class.compare(ui2.storage_class) < 0 ||
+      ip_location.compare(ui2.ip_location) < 0;
+  }
+  void dump(ceph::Formatter *f) const;
+  static void generate_test_instances(std::list<rgw_usage_info*>& o);
+};
+WRITE_CLASS_ENCODER(rgw_usage_info)
 
 struct rgw_usage_log_entry {
   rgw_user owner;
@@ -914,47 +950,53 @@ struct rgw_usage_log_entry {
   std::string bucket;
   uint64_t epoch;
   rgw_usage_data total_usage; /* this one is kept for backwards compatibility */
-  std::map<std::string, rgw_usage_data> usage_map;
+  std::map<std::string, rgw_usage_data> usage_map; /* this one is kept for backwards compatibility */
+  std::map<rgw_usage_info, rgw_usage_data> usage_info_map;
 
   rgw_usage_log_entry() : epoch(0) {}
   rgw_usage_log_entry(std::string& o, std::string& b) : owner(o), bucket(b), epoch(0) {}
   rgw_usage_log_entry(std::string& o, std::string& p, std::string& b) : owner(o), payer(p), bucket(b), epoch(0) {}
 
   void encode(ceph::buffer::list& bl) const {
-    ENCODE_START(3, 1, bl);
+    ENCODE_START(4, 1, bl);
     encode(owner.to_str(), bl);
     encode(bucket, bl);
     encode(epoch, bl);
-    encode(total_usage.bytes_sent, bl);
-    encode(total_usage.bytes_received, bl);
-    encode(total_usage.ops, bl);
-    encode(total_usage.successful_ops, bl);
-    encode(usage_map, bl);
     encode(payer.to_str(), bl);
+    encode(usage_info_map, bl);
     ENCODE_FINISH(bl);
   }
 
 
    void decode(ceph::buffer::list::const_iterator& bl) {
-    DECODE_START(3, bl);
+    DECODE_START(4, bl);
     std::string s;
     decode(s, bl);
     owner.from_str(s);
     decode(bucket, bl);
     decode(epoch, bl);
-    decode(total_usage.bytes_sent, bl);
-    decode(total_usage.bytes_received, bl);
-    decode(total_usage.ops, bl);
-    decode(total_usage.successful_ops, bl);
+    if (struct_v < 4) {
+      decode(total_usage.bytes_sent, bl);
+      decode(total_usage.bytes_received, bl);
+      decode(total_usage.ops, bl);
+      decode(total_usage.successful_ops, bl);
+    }
     if (struct_v < 2) {
       usage_map[""] = total_usage;
-    } else {
+    } else if (struct_v < 4) {
       decode(usage_map, bl);
     }
     if (struct_v >= 3) {
       std::string p;
       decode(p, bl);
       payer.from_str(p);
+    }
+    if (struct_v >= 4) {
+      decode(usage_info_map, bl);
+    } else {
+      for (auto& iter : usage_map) {
+        usage_info_map[rgw_usage_info(iter.first, "")] = iter.second;
+      }
     }
     DECODE_FINISH(bl);
   }
@@ -968,8 +1010,8 @@ struct rgw_usage_log_entry {
       payer = e.payer;
     }
 
-    for (auto iter = e.usage_map.begin(); iter != e.usage_map.end(); ++iter) {
-      if (!categories || !categories->size() || categories->count(iter->first)) {
+    for (auto iter = e.usage_info_map.begin(); iter != e.usage_info_map.end(); ++iter) {
+      if (!categories || !categories->size() || categories->count(iter->first.category)) {
         add(iter->first, iter->second);
       }
     }
@@ -978,16 +1020,15 @@ struct rgw_usage_log_entry {
   void sum(rgw_usage_data& usage,
 	   std::map<std::string, bool>& categories) const {
     usage = rgw_usage_data();
-    for (auto iter = usage_map.begin(); iter != usage_map.end(); ++iter) {
-      if (!categories.size() || categories.count(iter->first)) {
+    for (auto iter = usage_info_map.begin(); iter != usage_info_map.end(); ++iter) {
+      if (!categories.size() || categories.count(iter->first.category)) {
         usage.aggregate(iter->second);
       }
     }
   }
 
-  void add(const std::string& category, const rgw_usage_data& data) {
-    usage_map[category].aggregate(data);
-    total_usage.aggregate(data);
+  void add(const rgw_usage_info& usage_info, const rgw_usage_data& data) {
+    usage_info_map[usage_info].aggregate(data);
   }
 
   void dump(ceph::Formatter* f) const;
