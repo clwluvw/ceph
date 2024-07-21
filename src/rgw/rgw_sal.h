@@ -48,6 +48,8 @@ struct rgw_pubsub_bucket_topics;
 class RGWZonePlacementInfo;
 struct rgw_pubsub_topic;
 struct RGWOIDCProviderInfo;
+class RGWGetObj_Filter;
+class RGWCopyObj_CB;
 
 using RGWBucketListNameFilter = std::function<bool (const std::string&)>;
 
@@ -1128,9 +1130,10 @@ class Object {
                const char* if_match, const char* if_nomatch,
                AttrsMod attrs_mod, bool copy_if_newer, Attrs& attrs,
                RGWObjCategory category, uint64_t olh_epoch,
-	       boost::optional<ceph::real_time> delete_at,
+               boost::optional<ceph::real_time> delete_at,
                std::string* version_id, std::string* tag, std::string* etag,
                void (*progress_cb)(off_t, void *), void* progress_data,
+               RGWGetObj_Filter* filter, RGWCopyObj_CB* cb,
                const DoutPrefixProvider* dpp, optional_yield y) = 0;
     /** Get the ACL for this object */
     virtual RGWAccessControlPolicy& get_acl(void) = 0;

@@ -731,7 +731,7 @@ public:
   virtual int copy_object(const ACLOwner& owner,
                const rgw_user& remote_user,
                req_info* info, const rgw_zone_id& source_zone,
-	       rgw::sal::Object* dest_object, rgw::sal::Bucket* dest_bucket,
+               rgw::sal::Object* dest_object, rgw::sal::Bucket* dest_bucket,
                rgw::sal::Bucket* src_bucket,
                const rgw_placement_rule& dest_placement,
                ceph::real_time* src_mtime, ceph::real_time* mtime,
@@ -740,9 +740,10 @@ public:
                const char* if_match, const char* if_nomatch,
                AttrsMod attrs_mod, bool copy_if_newer, Attrs& attrs,
                RGWObjCategory category, uint64_t olh_epoch,
-	       boost::optional<ceph::real_time> delete_at,
+               boost::optional<ceph::real_time> delete_at,
                std::string* version_id, std::string* tag, std::string* etag,
                void (*progress_cb)(off_t, void *), void* progress_data,
+               RGWGetObj_Filter* filter, RGWCopyObj_CB* cb,
                const DoutPrefixProvider* dpp, optional_yield y) override;
   virtual RGWAccessControlPolicy& get_acl(void) override;
   virtual int set_acl(const RGWAccessControlPolicy& acl) override { return next->set_acl(acl); }

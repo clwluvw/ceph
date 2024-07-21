@@ -37,7 +37,6 @@
 #include "rgw_cksum.h"
 #include "rgw_common.h"
 #include "rgw_dmclock.h"
-#include "rgw_sal.h"
 #include "rgw_user.h"
 #include "rgw_bucket.h"
 #include "rgw_acl.h"
@@ -196,6 +195,8 @@ int retry_raced_bucket_write(const DoutPrefixProvider *dpp,
   return r;
 }
 
+class RGWGetObj_Filter;
+
 /**
  * Provide the base class for all ops.
  */
@@ -309,6 +310,13 @@ public:
   virtual dmc::client_id dmclock_client() { return dmc::client_id::metadata; }
   virtual dmc::Cost dmclock_cost() { return 1; }
   virtual void write_ops_log_entry(rgw_log_entry& entry) const {};
+  virtual int get_decrypt_filter(
+    std::unique_ptr<RGWGetObj_Filter>* filter,
+    RGWGetObj_Filter* cb,
+    std::map<std::string, bufferlist>& attrs,
+    bufferlist* manifest_bl,
+    std::map<std::string, std::string>& crypt_http_responses,
+    bool copy_source);
 };
 
 class RGWDefaultResponseOp : public RGWOp {
@@ -389,6 +397,7 @@ protected:
   bool rgwx_stat; /* extended rgw stat operation */
   std::string version_id;
   rgw_zone_set_entry dst_zone_trace;
+  std::map<std::string, std::string> crypt_http_responses;
 
   // compression attrs
   RGWCompressionInfo cs_info;
@@ -469,13 +478,6 @@ public:
   RGWOpType get_type() override { return RGW_OP_GET_OBJ; }
   uint32_t op_mask() override { return RGW_OP_TYPE_READ; }
   virtual bool need_object_expiration() { return false; }
-  /**
-   * calculates filter used to decrypt RGW objects data
-   */
-  virtual int get_decrypt_filter(std::unique_ptr<RGWGetObj_Filter>* filter, RGWGetObj_Filter* cb, bufferlist* manifest_bl) {
-    *filter = nullptr;
-    return 0;
-  }
 
   // get lua script to run as a "get object" filter
   int get_lua_filter(std::unique_ptr<RGWGetObj_Filter>* filter,
@@ -1291,14 +1293,6 @@ public:
   void pre_exec() override;
   void execute(optional_yield y) override;
 
-  /* this is for cases when copying data from other object */
-  virtual int get_decrypt_filter(std::unique_ptr<RGWGetObj_Filter>* filter,
-                                 RGWGetObj_Filter* cb,
-                                 std::map<std::string, bufferlist>& attrs,
-                                 bufferlist* manifest_bl) {
-    *filter = nullptr;
-    return 0;
-  }
   virtual int get_encrypt_filter(std::unique_ptr<rgw::sal::DataProcessor> *filter,
                                  rgw::sal::DataProcessor *cb) {
     return 0;
@@ -1507,6 +1501,7 @@ protected:
   std::string_view copy_source;
   // Not actually required
   std::optional<std::string_view> md_directive;
+  std::map<std::string, std::string> crypt_http_responses;
 
   off_t ofs;
   off_t len;
@@ -1590,6 +1585,8 @@ public:
   RGWOpType get_type() override { return RGW_OP_COPY_OBJ; }
   uint32_t op_mask() override { return RGW_OP_TYPE_WRITE; }
   dmc::client_id dmclock_client() override { return dmc::client_id::data; }
+
+  int get_processor(rgw::sal::DataProcessor*& filter, rgw::sal::DataProcessor* writer);
 };
 
 class RGWGetACLs : public RGWOp {
@@ -2655,3 +2652,27 @@ int rgw_policy_from_attrset(const DoutPrefixProvider *dpp,
                             CephContext *cct,
                             std::map<std::string, bufferlist>& attrset,
                             RGWAccessControlPolicy *policy);
+
+class RGWCopyObj_CB : public RGWGetObj_Filter
+{
+  RGWCopyObj *op;
+  rgw::sal::DataProcessor* processor;
+  off_t ofs = 0;
+
+public:
+  explicit RGWCopyObj_CB(RGWCopyObj *_op) : op(_op) {}
+  ~RGWCopyObj_CB() override {}
+
+  int set_writer(rgw::sal::DataProcessor* writer) {
+    return op->get_processor(processor, writer);
+  }
+
+  int handle_data(bufferlist& bl, off_t bl_ofs, off_t bl_len) override {
+    ofs += bl_len;
+    return processor->process(std::move(bl), bl_ofs);
+  }
+
+  int flush() override {
+    return processor->process({}, ofs);
+  }
+};

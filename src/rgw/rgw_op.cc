@@ -2426,17 +2426,19 @@ void RGWGetObj::execute(optional_yield y)
 
   start = ofs;
 
-  attr_iter = attrs.find(RGW_ATTR_MANIFEST);
-  op_ret = this->get_decrypt_filter(&decrypt, filter,
-                                    attr_iter != attrs.end() ? &(attr_iter->second) : nullptr);
-  if (decrypt != nullptr) {
-    filter = decrypt.get();
-    filter->fixup_range(ofs_x, end_x);
+  if (!skip_decrypt) { // bypass decryption for multisite sync requests
+    attr_iter = attrs.find(RGW_ATTR_MANIFEST);
+    op_ret = this->get_decrypt_filter(&decrypt, filter, attrs,
+                                      attr_iter != attrs.end() ? &(attr_iter->second) : nullptr,
+                                      crypt_http_responses, false);
+    if (decrypt != nullptr) {
+      filter = decrypt.get();
+      filter->fixup_range(ofs_x, end_x);
+    }
+    if (op_ret < 0) {
+      goto done_err;
+    }
   }
-  if (op_ret < 0) {
-    goto done_err;
-  }
-
 
   if (!get_data || ofs > end) {
     send_response_data(bl, 0, 0);
@@ -4041,11 +4043,13 @@ int RGWPutObj::get_data(const off_t fst, const off_t lst, bufferlist& bl)
     filter = &*decompress;
   }
 
+  std::map<std::string, std::string> crypt_http_responses_unused;
   auto attr_iter = obj->get_attrs().find(RGW_ATTR_MANIFEST);
   op_ret = this->get_decrypt_filter(&decrypt,
                                     filter,
                                     obj->get_attrs(),
-                                    attr_iter != obj->get_attrs().end() ? &(attr_iter->second) : nullptr);
+                                    attr_iter != obj->get_attrs().end() ? &(attr_iter->second) : nullptr,
+                                    crypt_http_responses_unused, true);
   if (decrypt != nullptr) {
     filter = decrypt.get();
   }
@@ -5403,6 +5407,27 @@ void RGWDeleteObj::execute(optional_yield y)
   }
 }
 
+int RGWCopyObj::get_processor(rgw::sal::DataProcessor*& filter, rgw::sal::DataProcessor* writer)
+{
+  filter = writer;
+
+  std::unique_ptr<BlockCrypt> block_crypt;
+  int ret = rgw_s3_prepare_encrypt(s, s->yield, attrs, &block_crypt, crypt_http_responses);
+  if (ret < 0) {
+    return ret;
+  }
+
+  if (block_crypt != nullptr) {
+    auto encrypt = new RGWPutObj_BlockEncrypt(s, s->cct, filter, std::move(block_crypt), s->yield);
+
+    filter = encrypt;
+  }
+
+  // compression?
+
+  return 0;
+}
+
 bool RGWCopyObj::parse_copy_location(const std::string_view& url_src,
 				     string& bucket_name,
 				     rgw_obj_key& key,
@@ -5720,33 +5745,53 @@ void RGWCopyObj::execute(optional_yield y)
     return;
   }
 
+  RGWCopyObj_CB cb(this);
+  RGWGetObj_Filter* filter = &cb;
+
+  std::unique_ptr<RGWGetObj_Filter> decrypt;
+  std::map<std::string, std::string> crypt_http_responses_unused;
+  auto attr_iter = s->src_object->get_attrs().find(RGW_ATTR_MANIFEST);
+  op_ret = this->get_decrypt_filter(&decrypt,
+                                    filter,
+                                    s->src_object->get_attrs(),
+                                    attr_iter != s->src_object->get_attrs().end() ? &(attr_iter->second) : nullptr,
+                                    crypt_http_responses_unused, true);
+  if (op_ret < 0) {
+    return;
+  }
+  if (decrypt) {
+    filter = decrypt.get();
+  }
+
   op_ret = s->src_object->copy_object(s->owner,
-	   s->user->get_id(),
-	   &s->info,
-	   source_zone,
-	   s->object.get(),
-	   s->bucket.get(),
-	   src_bucket.get(),
-	   s->dest_placement,
-	   &src_mtime,
-	   &mtime,
-	   mod_ptr,
-	   unmod_ptr,
-	   high_precision_time,
-	   if_match,
-	   if_nomatch,
-	   attrs_mod,
-	   copy_if_newer,
-	   attrs,
-	   RGWObjCategory::Main,
-	   olh_epoch,
-	   delete_at,
-	   (version_id.empty() ? NULL : &version_id),
-	   &s->req_id, /* use req_id as tag */
-	   &etag,
-	   copy_obj_progress_cb, (void *)this,
-	   this,
-	   s->yield);
+                                      s->user->get_id(),
+                                      &s->info,
+                                      source_zone,
+                                      s->object.get(),
+                                      s->bucket.get(),
+                                      src_bucket.get(),
+                                      s->dest_placement,
+                                      &src_mtime,
+                                      &mtime,
+                                      mod_ptr,
+                                      unmod_ptr,
+                                      high_precision_time,
+                                      if_match,
+                                      if_nomatch,
+                                      attrs_mod,
+                                      copy_if_newer,
+                                      attrs,
+                                      RGWObjCategory::Main,
+                                      olh_epoch,
+                                      delete_at,
+                                      (version_id.empty() ? NULL : &version_id),
+                                      &s->req_id, /* use req_id as tag */
+                                      &etag,
+                                      copy_obj_progress_cb, (void *)this,
+                                      filter,
+                                      &cb,
+                                      this,
+                                      s->yield);
 
   if (op_ret < 0) {
     return;
@@ -8921,3 +8966,49 @@ void rgw_slo_entry::decode_json(JSONObj *obj)
   JSONDecoder::decode_json("size_bytes", size_bytes, obj);
 };
 
+int RGWOp::get_decrypt_filter(
+  std::unique_ptr<RGWGetObj_Filter> *filter,
+  RGWGetObj_Filter* cb,
+  std::map<std::string, bufferlist>& attrs,
+  bufferlist* manifest_bl,
+  std::map<std::string, std::string>& crypt_http_responses,
+  bool copy_source)
+{
+  std::unique_ptr<BlockCrypt> block_crypt;
+  int res = rgw_s3_prepare_decrypt(s, s->yield, attrs, &block_crypt,
+                                   crypt_http_responses, copy_source);
+  if (res < 0) {
+    return res;
+  }
+  if (block_crypt == nullptr) {
+    return 0;
+  }
+
+  // in case of a multipart upload, we need to know the part lengths to
+  // correctly decrypt across part boundaries
+  std::vector<size_t> parts_len;
+
+  // for replicated objects, the original part lengths are preserved in an xattr
+  if (auto i = attrs.find(RGW_ATTR_CRYPT_PARTS); i != attrs.end()) {
+    try {
+      auto p = i->second.cbegin();
+      using ceph::decode;
+      decode(parts_len, p);
+    } catch (const buffer::error&) {
+      ldpp_dout(this, 1) << "failed to decode RGW_ATTR_CRYPT_PARTS" << dendl;
+      return -EIO;
+    }
+  } else if (manifest_bl) {
+    // otherwise, we read the part lengths from the manifest
+    res = RGWGetObj_BlockDecrypt::read_manifest_parts(this, *manifest_bl,
+                                                      parts_len);
+    if (res < 0) {
+      return res;
+    }
+  }
+
+  *filter = std::make_unique<RGWGetObj_BlockDecrypt>(
+      s, s->cct, cb, std::move(block_crypt),
+      std::move(parts_len), s->yield);
+  return 0;
+}

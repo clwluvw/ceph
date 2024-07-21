@@ -751,6 +751,8 @@ namespace rgw::sal {
       std::string* etag,
       void (*progress_cb)(off_t, void *),
       void* progress_data,
+      RGWGetObj_Filter* filter,
+      RGWCopyObj_CB* cb,
       const DoutPrefixProvider* dpp,
       optional_yield y)
   {

@@ -43,7 +43,6 @@ protected:
   // just the status line altered.
   int custom_http_ret = 0;
   bool checksum_mode{false};
-  std::map<std::string, std::string> crypt_http_responses;
   int override_range_hdr(const rgw::auth::StrategyRegistry& auth_registry, optional_yield y);
 public:
   RGWGetObj_ObjStore_S3() {}
@@ -54,9 +53,6 @@ public:
   int send_response_data_error(optional_yield y) override;
   int send_response_data(bufferlist& bl, off_t ofs, off_t len) override;
   void set_custom_http_response(int http_ret) { custom_http_ret = http_ret; }
-  int get_decrypt_filter(std::unique_ptr<RGWGetObj_Filter>* filter,
-                         RGWGetObj_Filter* cb,
-                         bufferlist* manifest_bl) override;
 };
 
 class RGWGetObjTags_ObjStore_S3 : public RGWGetObjTags_ObjStore
@@ -280,10 +276,6 @@ public:
 
   int get_encrypt_filter(std::unique_ptr<rgw::sal::DataProcessor> *filter,
                          rgw::sal::DataProcessor *cb) override;
-  int get_decrypt_filter(std::unique_ptr<RGWGetObj_Filter>* filter,
-                         RGWGetObj_Filter* cb,
-                         std::map<std::string, bufferlist>& attrs,
-                         bufferlist* manifest_bl) override;
 };
 
 class RGWPostObj_ObjStore_S3 : public RGWPostObj_ObjStore {

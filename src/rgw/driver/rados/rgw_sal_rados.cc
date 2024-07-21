@@ -2899,6 +2899,8 @@ int RadosObject::copy_object(const ACLOwner& owner,
 				std::string* etag,
 				void (*progress_cb)(off_t, void *),
 				void* progress_data,
+        RGWGetObj_Filter* filter,
+        RGWCopyObj_CB* cb,
 				const DoutPrefixProvider* dpp,
 				optional_yield y)
 {
@@ -2930,9 +2932,11 @@ int RadosObject::copy_object(const ACLOwner& owner,
 				     etag,
 				     progress_cb,
 				     progress_data,
+             filter,
+             cb,
 				     dpp,
 				     y,
-                                     dest_object->get_trace());
+             dest_object->get_trace());
 }
 
 int RadosObject::RadosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y)

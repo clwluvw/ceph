@@ -2942,6 +2942,8 @@ int RGWRados::swift_versioning_copy(RGWObjectCtx& obj_ctx,
                NULL, /* string *petag */
                NULL, /* void (*progress_cb)(off_t, void *) */
                NULL, /* void *progress_data */
+               NULL, /* RGWGetObj_Filter* filter */
+               NULL, /* RGWCopyObj_CB* cb */
                dpp,
                y,
                no_trace);
@@ -3041,6 +3043,8 @@ int RGWRados::swift_versioning_restore(RGWObjectCtx& obj_ctx,
                        nullptr,       /* string *petag */
                        nullptr,       /* void (*progress_cb)(off_t, void *) */
                        nullptr,       /* void *progress_data */
+                       nullptr,       /* RGWGetObj_Filter* filter */
+                       nullptr,       /* RGWCopyObj_CB* cb */
                        dpp,
                        y,
                        no_trace);
@@ -3672,7 +3676,7 @@ int RGWRados::rewrite_obj(RGWBucketInfo& dest_bucket_info, const rgw_obj& obj, c
   return copy_obj_data(octx, owner, dest_bucket_info,
                        dest_bucket_info.placement_rule,
                        read_op, obj_size - 1, obj, NULL, mtime,
-                       attrset, 0, real_time(), NULL, dpp, y);
+                       attrset, 0, real_time(), NULL, NULL, NULL, dpp, y);
 }
 
 
@@ -4631,12 +4635,14 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
                rgw::sal::Attrs& attrs,
                RGWObjCategory category,
                uint64_t olh_epoch,
-	       real_time delete_at,
+               real_time delete_at,
                string *version_id,
                string *ptag,
                string *petag,
                void (*progress_cb)(off_t, void *),
                void *progress_data,
+               RGWGetObj_Filter* filter,
+               RGWCopyObj_CB* cb,
                const DoutPrefixProvider *dpp,
                optional_yield y,
                jspan_context& trace)
@@ -4646,9 +4652,6 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
   rgw_obj shadow_obj = dest_obj;
   string shadow_oid;
 
-  bool remote_src;
-  bool remote_dest;
-
   bool stat_follow_olh = false;
   rgw_obj stat_dest_obj = dest_obj;
 
@@ -4657,8 +4660,8 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
 
   auto& zonegroup = svc.zone->get_zonegroup();
 
-  remote_dest = !zonegroup.equals(dest_bucket_info.zonegroup);
-  remote_src = !zonegroup.equals(src_bucket_info.zonegroup);
+  bool remote_dest = !zonegroup.equals(dest_bucket_info.zonegroup);
+  bool remote_src = !zonegroup.equals(src_bucket_info.zonegroup);
 
   if (remote_src && remote_dest) {
     ldpp_dout(dpp, 0) << "ERROR: can't copy object when both src and dest buckets are remote" << dendl;
@@ -4696,7 +4699,7 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
   if (ret < 0) {
     return ret;
   }
-  if (src_attrs.count(RGW_ATTR_CRYPT_MODE)) {
+  if (src_attrs.count(RGW_ATTR_CRYPT_MODE) && (src_attrs.count(RGW_ATTR_CRYPT_PARTS) || remote_dest)) {
     // Current implementation does not follow S3 spec and even
     // may result in data corruption silently when copying
     // multipart objects across pools. So reject COPY operations
@@ -4727,6 +4730,36 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
   src_attrs.erase(RGW_ATTR_OBJ_REPLICATION_TRACE);
   src_attrs.erase(RGW_ATTR_OBJ_REPLICATION_TIMESTAMP);
   src_attrs.erase(RGW_ATTR_OBJ_REPLICATION_STATUS);
+
+  if (attrs.count(RGW_ATTR_CRYPT_KEYSEL))
+    src_attrs[RGW_ATTR_CRYPT_KEYSEL] = attrs[RGW_ATTR_CRYPT_KEYSEL];
+  else
+    src_attrs.erase(RGW_ATTR_CRYPT_KEYSEL);
+
+  if (attrs.count(RGW_ATTR_CRYPT_CONTEXT))
+    src_attrs[RGW_ATTR_CRYPT_CONTEXT] = attrs[RGW_ATTR_CRYPT_CONTEXT];
+  else
+    src_attrs.erase(RGW_ATTR_CRYPT_CONTEXT);
+
+  if (attrs.count(RGW_ATTR_CRYPT_MODE))
+    src_attrs[RGW_ATTR_CRYPT_MODE] = attrs[RGW_ATTR_CRYPT_MODE];
+  else
+    src_attrs.erase(RGW_ATTR_CRYPT_MODE);
+
+  if (attrs.count(RGW_ATTR_CRYPT_KEYID))
+    src_attrs[RGW_ATTR_CRYPT_KEYID] = attrs[RGW_ATTR_CRYPT_KEYID];
+  else
+    src_attrs.erase(RGW_ATTR_CRYPT_KEYID);
+
+  if (attrs.count(RGW_ATTR_CRYPT_KEYMD5))
+    src_attrs[RGW_ATTR_CRYPT_KEYMD5] = attrs[RGW_ATTR_CRYPT_KEYMD5];
+  else
+    src_attrs.erase(RGW_ATTR_CRYPT_KEYMD5);
+
+  if (attrs.count(RGW_ATTR_CRYPT_DATAKEY))
+    src_attrs[RGW_ATTR_CRYPT_DATAKEY] = attrs[RGW_ATTR_CRYPT_DATAKEY];
+  else
+    src_attrs.erase(RGW_ATTR_CRYPT_DATAKEY);
 
   set_copy_attrs(src_attrs, attrs, attrs_mod);
   attrs.erase(RGW_ATTR_ID_TAG);
@@ -4819,7 +4852,7 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
   if (copy_data) { /* refcounting tail wouldn't work here, just copy the data */
     attrs.erase(RGW_ATTR_TAIL_TAG);
     return copy_obj_data(obj_ctx, owner, dest_bucket_info, dest_placement, read_op, obj_size - 1, dest_obj,
-                         mtime, real_time(), attrs, olh_epoch, delete_at, petag, dpp, y);
+                         mtime, real_time(), attrs, olh_epoch, delete_at, petag, filter, cb, dpp, y);
   }
 
   /* This has been in for 2 years, so we can safely assume amanifest is not NULL */
@@ -4979,14 +5012,16 @@ int RGWRados::copy_obj_data(RGWObjectCtx& obj_ctx,
                const ACLOwner& owner,
                RGWBucketInfo& dest_bucket_info,
                const rgw_placement_rule& dest_placement,
-	       RGWRados::Object::Read& read_op, off_t end,
+               RGWRados::Object::Read& read_op, off_t end,
                const rgw_obj& dest_obj,
-	       real_time *mtime,
-	       real_time set_mtime,
+               real_time *mtime,
+               real_time set_mtime,
                rgw::sal::Attrs& attrs,
                uint64_t olh_epoch,
-	       real_time delete_at,
+               real_time delete_at,
                string *petag,
+               RGWGetObj_Filter* filter,
+               RGWCopyObj_CB* cb,
                const DoutPrefixProvider *dpp,
                optional_yield y,
                bool log_op)
@@ -4997,34 +5032,33 @@ int RGWRados::copy_obj_data(RGWObjectCtx& obj_ctx,
   auto aio = rgw::make_throttle(cct->_conf->rgw_put_obj_min_window_size, y);
   using namespace rgw::putobj;
   jspan_context no_trace{false, false};
-  AtomicObjectProcessor processor(aio.get(), this, dest_bucket_info,
+  AtomicObjectProcessor aoproc(aio.get(), this, dest_bucket_info,
                                   &dest_placement, owner,
                                   obj_ctx, dest_obj, olh_epoch, tag, dpp, y, no_trace);
-  int ret = processor.prepare(y);
+
+  int ret = cb->set_writer(&aoproc);
+  if (ret < 0) {
+    return ret;
+  }
+
+  ret = aoproc.prepare(y);
   if (ret < 0)
     return ret;
 
   off_t ofs = 0;
 
-  do {
-    bufferlist bl;
-    ret = read_op.read(ofs, end, bl, y, dpp);
-    if (ret < 0) {
-      ldpp_dout(dpp, 0) << "ERROR: fail to read object data, ret = " << ret << dendl;
-      return ret;
-    }
+  filter->fixup_range(ofs, end);
 
-    uint64_t read_len = ret;
-    ret = processor.process(std::move(bl), ofs);
-    if (ret < 0) {
-      return ret;
-    }
+  ret = read_op.iterate(dpp, ofs, end, filter, y);
+  if (ret < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: fail to read object data, ret = " << ret << dendl;
+    return ret;
+  }
 
-    ofs += read_len;
-  } while (ofs <= end);
+  ofs = end;
 
   // flush
-  ret = processor.process({}, ofs);
+  ret = filter->flush();
   if (ret < 0) {
     return ret;
   }
@@ -5053,7 +5087,7 @@ int RGWRados::copy_obj_data(RGWObjectCtx& obj_ctx,
   }
 
   const req_context rctx{dpp, y, nullptr};
-  return processor.complete(accounted_size, etag, mtime, set_mtime, attrs,
+  return aoproc.complete(accounted_size, etag, mtime, set_mtime, attrs,
 			    rgw::cksum::no_cksum, delete_at,
                             nullptr, nullptr, nullptr, nullptr, nullptr, rctx,
                             log_op ? rgw::sal::FLAG_LOG_OP : 0);
@@ -5113,6 +5147,8 @@ int RGWRados::transition_obj(RGWObjectCtx& obj_ctx,
                       olh_epoch,
                       real_time(),
                       nullptr /* petag */,
+                      nullptr /* filter */,
+                      nullptr /* cb */,
                       dpp,
                       y,
                       log_op);

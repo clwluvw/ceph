@@ -32,6 +32,10 @@ class Pipe : public rgw::sal::DataProcessor {
   int process(bufferlist&& data, uint64_t offset) override {
     return next->process(std::move(data), offset);
   }
+
+  void set_next(rgw::sal::DataProcessor *next) {
+    this->next = next;
+  }
 };
 
 // pipe that writes to the next processor in discrete chunks
