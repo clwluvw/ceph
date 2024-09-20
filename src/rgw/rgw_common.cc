@@ -3194,3 +3194,25 @@ void RGWObjVersionTracker::generate_new_write_ver(CephContext *cct)
   append_rand_alpha(cct, write_version.tag, write_version.tag, TAG_LEN);
 }
 
+int get_owner_tenant(const DoutPrefixProvider* dpp,
+                     optional_yield y,
+                     rgw::sal::Driver* driver,
+                     const rgw_owner& owner,
+                     std::string& tenant)
+{
+  return std::visit(fu2::overload(
+      [&] (const rgw_user& user) {
+        tenant = user.tenant;
+        return 0;
+      },
+      [&] (const rgw_account_id& account) {
+        RGWAccountInfo info;
+        rgw::sal::Attrs attrs;
+        RGWObjVersionTracker objv;
+        int ret = driver->load_account_by_id(dpp, y, account, info, attrs, objv);
+        if (ret >= 0) {
+          tenant = std::move(info.tenant);
+        }
+        return ret;
+      }), owner);
+}

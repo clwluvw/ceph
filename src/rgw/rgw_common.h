@@ -2005,3 +2005,10 @@ struct AioCompletionDeleter {
   void operator()(librados::AioCompletion* c) { c->release(); }
 };
 using aio_completion_ptr = std::unique_ptr<librados::AioCompletion, AioCompletionDeleter>;
+
+// for account owners, we need to look up the tenant name by account id
+extern int get_owner_tenant(const DoutPrefixProvider* dpp,
+                            optional_yield y,
+                            rgw::sal::Driver* driver,
+                            const rgw_owner& owner,
+                            std::string& tenant);
