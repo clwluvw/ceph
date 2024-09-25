@@ -37,6 +37,10 @@ public:
     return {};
   }
 
+  string get_aclowner_tenant() const override {
+    return {};
+  }
+
   uint32_t get_perms_from_aclspec(const DoutPrefixProvider* dpp, const aclspec_t& aclspec) const override {
     return 0;
   };

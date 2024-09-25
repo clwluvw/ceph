@@ -1268,11 +1268,7 @@ struct ReplicationConfiguration {
       pipe->id = id;
       pipe->params.priority = priority;
 
-      string tenant_owner;
-      int r = get_owner_tenant(s, null_yield, driver, s->owner.id, tenant_owner);
-      if (r < 0) {
-        return r;
-      }
+      const auto& tenant_owner = s->auth.identity->get_aclowner_tenant();
 
       rgw_bucket_key dest_bk(tenant_owner,
                              destination.bucket);
