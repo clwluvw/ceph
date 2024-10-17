@@ -514,6 +514,7 @@ class RGWGetObjTags : public RGWOp {
 class RGWPutObjTags : public RGWOp {
  protected:
   bufferlist tags_bl;
+  RGWObjTags obj_tags;
  public:
   int verify_permission(optional_yield y) override;
   void execute(optional_yield y) override;

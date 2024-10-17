@@ -904,7 +904,7 @@ static int commit_reshard(rgw::sal::RadosStore* store,
     for (uint32_t shard_id = 0; shard_id < rgw::num_shards(prev.current_index.layout.normal); ++shard_id) {
       // This null_yield can stay, for now, since we're in our own thread
       ret = store->svc()->datalog_rados->add_entry(dpp, bucket_info, prev.logs.back(), shard_id,
-						   null_yield);
+						   null_yield, ""); // log for all zones
       if (ret < 0) {
         ldpp_dout(dpp, 1) << "WARNING: failed writing data log (bucket_info.bucket="
         << bucket_info.bucket << ", shard_id=" << shard_id << "of generation="

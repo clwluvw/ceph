@@ -46,6 +46,7 @@ void rgw_data_change::dump(ceph::Formatter *f) const
   utime_t ut(timestamp);
   encode_json("timestamp", ut, f);
   encode_json("gen", gen, f);
+  encode_json("log_zonegroup", log_zonegroup, f);
 }
 
 void rgw_data_change::decode_json(JSONObj *obj) {
@@ -61,6 +62,7 @@ void rgw_data_change::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("timestamp", ut, obj);
   timestamp = ut.to_real_time();
   JSONDecoder::decode_json("gen", gen, obj);
+  JSONDecoder::decode_json("log_zonegroup", log_zonegroup, obj);
 }
 
 void rgw_data_change::generate_test_instances(std::list<rgw_data_change *>& l) {
@@ -70,6 +72,7 @@ void rgw_data_change::generate_test_instances(std::list<rgw_data_change *>& l) {
   l.back()->key = "bucket_name";
   l.back()->timestamp = ceph::real_clock::zero();
   l.back()->gen = 0;
+  l.back()->log_zonegroup = "log_zonegroup";
 }
 
 void rgw_data_change_log_entry::dump(Formatter *f) const
@@ -555,7 +558,7 @@ int RGWDataChangesLog::renew_entries(const DoutPrefixProvider *dpp)
 
   auto ut = real_clock::now();
   auto be = bes->head();
-  for (const auto& [bs, gen] : entries) {
+  for (const auto& [bs, gen, log_zonegroup] : entries) {
     auto index = choose_oid(bs);
 
     rgw_data_change change;
@@ -564,9 +567,10 @@ int RGWDataChangesLog::renew_entries(const DoutPrefixProvider *dpp)
     change.key = bs.get_key();
     change.timestamp = ut;
     change.gen = gen;
+    change.log_zonegroup = log_zonegroup;
     encode(change, bl);
 
-    m[index].first.push_back({bs, gen});
+    m[index].first.push_back({bs, gen, log_zonegroup});
     be->prepare(ut, change.key, std::move(bl), m[index].second);
   }
 
@@ -586,8 +590,8 @@ int RGWDataChangesLog::renew_entries(const DoutPrefixProvider *dpp)
 
     auto expiration = now;
     expiration += ceph::make_timespan(cct->_conf->rgw_data_log_window);
-    for (auto& [bs, gen] : buckets) {
-      update_renewed(bs, gen, expiration);
+    for (auto& [bs, gen, log_zonegroup] : buckets) {
+      update_renewed(bs, gen, log_zonegroup, expiration);
     }
   }
 
@@ -595,31 +599,34 @@ int RGWDataChangesLog::renew_entries(const DoutPrefixProvider *dpp)
 }
 
 auto RGWDataChangesLog::_get_change(const rgw_bucket_shard& bs,
-				    uint64_t gen)
+				    uint64_t gen,
+                                    const std::string& log_zonegroup)
   -> ChangeStatusPtr
 {
   ceph_assert(ceph_mutex_is_locked(lock));
   ChangeStatusPtr status;
-  if (!changes.find({bs, gen}, status)) {
+  if (!changes.find({bs, gen, log_zonegroup}, status)) {
     status = std::make_shared<ChangeStatus>();
-    changes.add({bs, gen}, status);
+    changes.add({bs, gen, log_zonegroup}, status);
   }
   return status;
 }
 
 void RGWDataChangesLog::register_renew(const rgw_bucket_shard& bs,
-				       const rgw::bucket_log_layout_generation& gen)
+				       const rgw::bucket_log_layout_generation& gen,
+                                       const std::string& log_zonegroup)
 {
   std::scoped_lock l{lock};
-  cur_cycle.insert({bs, gen.gen});
+  cur_cycle.insert({bs, gen.gen, log_zonegroup});
 }
 
 void RGWDataChangesLog::update_renewed(const rgw_bucket_shard& bs,
 				       uint64_t gen,
+                                       const std::string& log_zonegroup,
 				       real_time expiration)
 {
   std::unique_lock l{lock};
-  auto status = _get_change(bs, gen);
+  auto status = _get_change(bs, gen, log_zonegroup);
   l.unlock();
 
   ldout(cct, 20) << "RGWDataChangesLog::update_renewed() bucket_name="
@@ -644,7 +651,8 @@ std::string RGWDataChangesLog::get_oid(uint64_t gen_id, int i) const {
 int RGWDataChangesLog::add_entry(const DoutPrefixProvider *dpp,
 				 const RGWBucketInfo& bucket_info,
 				 const rgw::bucket_log_layout_generation& gen,
-				 int shard_id, optional_yield y)
+				 int shard_id, optional_yield y,
+                                 const std::string& log_zonegroup)
 {
   auto& bucket = bucket_info.bucket;
 
@@ -656,11 +664,11 @@ int RGWDataChangesLog::add_entry(const DoutPrefixProvider *dpp,
 
   int index = choose_oid(bs);
 
-  mark_modified(index, bs, gen.gen);
+  mark_modified(index, bs, gen.gen); // XXX: integrate log_zonegroup?
 
   std::unique_lock l(lock);
 
-  auto status = _get_change(bs, gen.gen);
+  auto status = _get_change(bs, gen.gen, log_zonegroup);
   l.unlock();
 
   auto now = real_clock::now();
@@ -674,7 +682,7 @@ int RGWDataChangesLog::add_entry(const DoutPrefixProvider *dpp,
   if (now < status->cur_expiration) {
     /* no need to send, recently completed */
     sl.unlock();
-    register_renew(bs, gen);
+    register_renew(bs, gen, log_zonegroup);
     return 0;
   }
 
@@ -691,7 +699,7 @@ int RGWDataChangesLog::add_entry(const DoutPrefixProvider *dpp,
     int ret = cond->wait();
     cond->put();
     if (!ret) {
-      register_renew(bs, gen);
+      register_renew(bs, gen, log_zonegroup);
     }
     return ret;
   }
@@ -717,6 +725,7 @@ int RGWDataChangesLog::add_entry(const DoutPrefixProvider *dpp,
     change.key = bs.get_key();
     change.timestamp = now;
     change.gen = gen.gen;
+    change.log_zonegroup = log_zonegroup;
     encode(change, bl);
 
     ldpp_dout(dpp, 20) << "RGWDataChangesLog::add_entry() sending update with now=" << now << " cur_expiration=" << expiration << dendl;

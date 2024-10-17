@@ -212,10 +212,22 @@ int RGWDataAccess::Object::put(bufferlist& data,
     return ret;
   }
 
-  if (ret = should_log_op(driver, b->get_key(), obj->get_name(), obj->get_attrs(), dpp, y); ret < 0) {
+  std::string log_zonegroup;
+  if (ret = should_log_op(driver, b->get_key(), obj->get_name(), obj->get_attrs(), dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
     return ret;
   }
   const bool log_op = ret;
+
+  if (log_op || ret == -ENOENT) {
+    std::string replication_status = "PENDING";
+    if (ret == -ENOENT) {
+      replication_status = "FAILED";
+    }
+
+    bufferlist bl;
+    encode(replication_status, bl);
+    attrs[RGW_ATTR_OBJ_REPLICATION_STATUS] = bl;
+  }
 
   const req_context rctx{dpp, y, nullptr};
   return processor->complete(obj_size, etag,
@@ -224,7 +236,7 @@ int RGWDataAccess::Object::put(bufferlist& data,
 			     delete_at,
 			     nullptr, nullptr,
 			     puser_data,
-			     nullptr, nullptr,
+			     nullptr, &log_zonegroup, nullptr,
 			     rctx, log_op ? rgw::sal::FLAG_LOG_OP : 0);
 }
 

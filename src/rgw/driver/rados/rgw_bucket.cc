@@ -154,12 +154,13 @@ int rgw_remove_object(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver, r
     return ret;
   }
 
-  if (ret = should_log_op(driver, bucket->get_key(), object->get_name(), object->get_attrs(), dpp, y); ret < 0) {
+  std::string log_zonegroup;
+  if (ret = should_log_op(driver, bucket->get_key(), object->get_name(), object->get_attrs(), dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
     return ret;
   }
   const bool log_op = ret;
 
-  return object->delete_object(dpp, y, log_op ? rgw::sal::FLAG_LOG_OP : 0, nullptr, nullptr);
+  return object->delete_object(dpp, y, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0, nullptr, nullptr);
 }
 
 static void set_err_msg(std::string *sink, std::string msg)
@@ -680,7 +681,7 @@ static int check_index_olh(rgw::sal::RadosStore* const rados_store,
             continue;
           }
 	  RGWObjState& state = static_cast<rgw::sal::RadosObject*>(object.get())->get_state();
-          ret = store->update_olh(dpp, obj_ctx, &state, bucket->get_info(), obj, y);
+          ret = store->update_olh(dpp, obj_ctx, &state, bucket->get_info(), obj, y, nullptr, nullptr, false, false);
           if (ret < 0) {
             ldpp_dout(dpp, -1) << "ERROR failed to update olh for: " << olh_entry.key.name << " update_olh(): " << cpp_strerror(-ret) << dendl;
             continue;
