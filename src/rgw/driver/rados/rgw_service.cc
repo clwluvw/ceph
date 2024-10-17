@@ -61,7 +61,7 @@ int RGWServices_Def::init(CephContext *cct,
   bilog_rados = std::make_unique<RGWSI_BILog_RADOS>(cct);
   cls = std::make_unique<RGWSI_Cls>(cct);
   config_key_rados = std::make_unique<RGWSI_ConfigKey_RADOS>(cct);
-  datalog_rados = std::make_unique<RGWDataChangesLog>(cct, driver);
+  datalog_rados = std::make_unique<RGWDataChangesLog>(cct, bucket_sync_sobj.get());
   mdlog = std::make_unique<RGWSI_MDLog>(cct, run_sync);
   notify = std::make_unique<RGWSI_Notify>(cct);
   zone = std::make_unique<RGWSI_Zone>(cct);

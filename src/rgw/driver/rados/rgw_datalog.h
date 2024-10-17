@@ -39,6 +39,7 @@
 #include "rgw_sync_policy.h"
 #include "rgw_zone.h"
 #include "rgw_trim_bilog.h"
+#include "services/svc_bucket_sync.h"
 
 namespace bc = boost::container;
 
@@ -247,7 +248,7 @@ class RGWDataChangesLog {
   rgw::BucketChangeObserver *observer = nullptr;
   const RGWZone* zone;
   std::unique_ptr<DataLogBackends> bes;
-  rgw::sal::RadosStore* driver;
+  RGWSI_Bucket_Sync* bucket_sync;
 
   const int num_shards;
   std::string get_prefix() { return "data_log"; }
@@ -303,7 +304,7 @@ class RGWDataChangesLog {
 
 public:
 
-  RGWDataChangesLog(CephContext* cct, rgw::sal::RadosStore* driver);
+  RGWDataChangesLog(CephContext* cct, RGWSI_Bucket_Sync* bucket_sync);
   ~RGWDataChangesLog();
 
   int start(const DoutPrefixProvider *dpp, const RGWZone* _zone, const RGWZoneParams& zoneparams,

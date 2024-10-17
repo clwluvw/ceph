@@ -15,7 +15,6 @@
 #include "cls/fifo/cls_fifo_types.h"
 #include "cls/log/cls_log_client.h"
 
-#include "rgw_sal_rados.h"
 #include "rgw_bucket_sync.h"
 #include "cls_fifo_legacy.h"
 #include "rgw_bucket_layout.h"
@@ -422,9 +421,9 @@ public:
   }
 };
 
-RGWDataChangesLog::RGWDataChangesLog(CephContext* cct, rgw::sal::RadosStore* driver)
+RGWDataChangesLog::RGWDataChangesLog(CephContext* cct, RGWSI_Bucket_Sync* bucket_sync)
   : cct(cct),
-    driver(driver),
+    bucket_sync(bucket_sync),
     num_shards(cct->_conf->rgw_data_log_num_shards),
     prefix(get_prefix()),
     changes(cct->_conf->rgw_data_log_changes_size) {}
@@ -1105,7 +1104,7 @@ int RGWDataChangesLog::bucket_exports_data(const rgw_bucket& bucket,
 {
   RGWBucketSyncPolicyHandlerRef handler;
 
-  int r = driver->get_sync_policy_handler(dpp, std::nullopt, bucket, &handler, y);
+  int r = bucket_sync->get_policy_handler(std::nullopt, bucket, &handler, y, dpp);
   if (r < 0) {
     ldpp_dout(dpp, -1) << "ERROR: failed to get sync policy handler for bucket=" << bucket << " ret=" << r << dendl;
     return r;
@@ -1119,7 +1118,7 @@ int RGWDataChangesLog::may_log_data(optional_yield y,
 {
   RGWBucketSyncPolicyHandlerRef handler;
 
-  int r = driver->get_sync_policy_handler(dpp, rgw_zone_id(zone->id), std::nullopt, &handler, y);
+  int r = bucket_sync->get_policy_handler(rgw_zone_id(zone->id), std::nullopt, &handler, y, dpp);
   if (r < 0) {
     ldpp_dout(dpp, -1) << "ERROR: failed to get sync policy handler for my zone=" << zone->id << " ret=" << r << dendl;
     return r;
