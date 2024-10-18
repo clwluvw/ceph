@@ -188,7 +188,7 @@ public:
   int list(const DoutPrefixProvider *dpp, int shard, int max_entries,
 	   std::vector<rgw_data_change_log_entry>& entries,
 	   std::string_view marker, std::string* out_marker, bool* truncated,
-	   optional_yield y);
+	   optional_yield y, const std::string& rgwx_zonegroup);
   int trim_entries(const DoutPrefixProvider *dpp, int shard_id,
 		   std::string_view marker, optional_yield y);
   void trim_entries(const DoutPrefixProvider *dpp, int shard_id, std::string_view marker,
@@ -317,7 +317,8 @@ public:
   int list_entries(const DoutPrefixProvider *dpp, int shard, int max_entries,
 		   std::vector<rgw_data_change_log_entry>& entries,
 		   std::string_view marker, std::string* out_marker,
-		   bool* truncated, optional_yield y);
+		   bool* truncated, optional_yield y,
+                   const std::string& rgwx_zonegroup);
   int trim_entries(const DoutPrefixProvider *dpp, int shard_id,
 		   std::string_view marker, optional_yield y);
   int trim_entries(const DoutPrefixProvider *dpp, int shard_id, std::string_view marker,
@@ -330,7 +331,7 @@ public:
   int list_entries(const DoutPrefixProvider *dpp, int max_entries,
 		   std::vector<rgw_data_change_log_entry>& entries,
 		   LogMarker& marker, bool* ptruncated,
-		   optional_yield y);
+		   optional_yield y, const std::string& rgwx_zonegroup);
 
   void mark_modified(int shard_id, const rgw_bucket_shard& bs, uint64_t gen);
   auto read_clear_modified() {
