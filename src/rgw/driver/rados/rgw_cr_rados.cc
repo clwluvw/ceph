@@ -946,12 +946,15 @@ int RGWAsyncRemoveObj::_send_request(const DoutPrefixProvider *dpp)
   del_op->params.zones_trace = &zones_trace;
   del_op->params.null_verid = false;
 
-  std::string log_zonegroup;
-  if (ret = should_log_op(store, bucket->get_key(), obj->get_name(), obj->get_attrs(), dpp, null_yield, &log_zonegroup); ret < 0 && ret != -ENOENT) {
-    return ret;
+  bool log_op = dpp->get_cct()->_conf->rgw_data_sync_allow_chain_replication;
+  if (log_op) {
+    std::string log_zonegroup;
+    if (ret = should_log_op(store, bucket->get_key(), obj->get_name(), obj->get_attrs(), dpp, null_yield, &log_zonegroup); ret < 0 && ret != -ENOENT) {
+      return ret;
+    }
+    log_op = ret;
+    del_op->params.log_zonegroup = &log_zonegroup;
   }
-  const bool log_op = ret;
-  del_op->params.log_zonegroup = &log_zonegroup;
 
   ret = del_op->delete_obj(dpp, null_yield, log_op ? rgw::sal::FLAG_LOG_OP : 0);
   if (ret < 0) {
