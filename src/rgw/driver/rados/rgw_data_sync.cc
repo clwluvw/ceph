@@ -3036,7 +3036,7 @@ public:
           if (!need_retry) {
             need_retry = make_shared<bool>();
           }
-          auto filter = make_shared<RGWFetchObjFilter_Sync>(sync_pipe,
+          auto filter = make_shared<RGWFetchObjFilter_Sync>(sync_pipe, // XXX: is this still needed?
                                                             source_bucket_perms,
                                                             std::move(dest_params),
                                                             need_retry);
@@ -5001,7 +5001,6 @@ int RGWBucketShardIncrementalSyncCR::operate(const DoutPrefixProvider *dpp)
         if (e.zones_trace.exists(zone_id.id, target_location_key)) {
           continue;
         }
-        // probably don't need to check for log_zonegroup as on the serve we will filter
         auto& squash_entry = squash_map[make_pair(e.object, e.instance)];
         // don't squash over olh entries - we need to apply their olh_epoch
         if (has_olh_epoch(squash_entry.second) && !has_olh_epoch(e.op)) {
@@ -5086,7 +5085,6 @@ int RGWBucketShardIncrementalSyncCR::operate(const DoutPrefixProvider *dpp)
           marker_tracker.try_update_high_marker(cur_id, 0, entry->timestamp);
           continue;
         }
-        // perhaps the same here - no need to check for log_zonegroup as on the serve we will filter
         if (make_pair<>(entry->timestamp, entry->op) != squash_map[make_pair(entry->object, entry->instance)]) {
           set_status() << "squashed operation, skipping";
           tn->log(20, SSTR("skipping object: "

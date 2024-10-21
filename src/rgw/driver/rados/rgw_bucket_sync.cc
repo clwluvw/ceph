@@ -1002,7 +1002,7 @@ bool RGWBucketSyncPolicyHandler::bucket_exports_object(const std::string& obj_na
     for (const auto& entry : target_pipes.pipe_map) {
       pipes.push_back(&entry.second);
     }
-    if (dest_pipe) { // if dest_zone is provided, sort by priority and return the highest priority zone
+    if (dest_pipe) { // if dest_pipe is provided, sort by priority and return the highest priority pipe
       std::sort(pipes.begin(), pipes.end(), [](const rgw_sync_bucket_pipe* a, const rgw_sync_bucket_pipe* b) {
         return a->params.priority > b->params.priority;
       });
