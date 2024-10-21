@@ -392,12 +392,13 @@ struct rgw_bucket_dir_entry {
   std::string tag;
   uint16_t flags;
   uint64_t versioned_epoch;
+  std::string log_zonegroup; // this currently is only being used by check_disk_state() to pass the log_zonegroup to cls in order to log for the correct zonegroup
 
   rgw_bucket_dir_entry() :
     exists(false), index_ver(0), flags(0), versioned_epoch(0) {}
 
   void encode(ceph::buffer::list &bl) const {
-    ENCODE_START(8, 3, bl);
+    ENCODE_START(9, 3, bl);
     encode(key.name, bl);
     encode(ver.epoch, bl);
     encode(exists, bl);
@@ -410,10 +411,11 @@ struct rgw_bucket_dir_entry {
     encode(key.instance, bl);
     encode(flags, bl);
     encode(versioned_epoch, bl);
+    encode(log_zonegroup, bl);
     ENCODE_FINISH(bl);
   }
   void decode(ceph::buffer::list::const_iterator &bl) {
-    DECODE_START_LEGACY_COMPAT_LEN(8, 3, 3, bl);
+    DECODE_START_LEGACY_COMPAT_LEN(9, 3, 3, bl);
     decode(key.name, bl);
     decode(ver.epoch, bl);
     decode(exists, bl);
@@ -439,6 +441,9 @@ struct rgw_bucket_dir_entry {
     }
     if (struct_v >= 8) {
       decode(versioned_epoch, bl);
+    }
+    if (struct_v >= 9) {
+      decode(log_zonegroup, bl);
     }
     DECODE_FINISH(bl);
   }

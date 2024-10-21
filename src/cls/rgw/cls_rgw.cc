@@ -1992,7 +1992,7 @@ static int rgw_bucket_link_olh(cls_method_context_t hctx, bufferlist *in, buffer
   string *powner = NULL;
   string *powner_display_name = NULL;
 
-  if (op.delete_marker) { // why only for delete marker?
+  if (op.delete_marker) {
     powner = &entry.meta.owner;
     powner_display_name = &entry.meta.owner_display_name;
   }
@@ -2524,7 +2524,7 @@ int rgw_dir_suggest_changes(cls_method_context_t hctx,
 	}
         if (log_op && cur_disk.exists && !header.syncstopped) {
           ret = log_index_operation(hctx, cur_disk.key, CLS_RGW_OP_DEL, cur_disk.tag, cur_disk.meta.mtime,
-                                    cur_disk.ver, CLS_RGW_STATE_COMPLETE, header.ver, header.max_marker, 0, NULL, NULL, NULL, NULL); // log for all?
+                                    cur_disk.ver, CLS_RGW_STATE_COMPLETE, header.ver, header.max_marker, 0, NULL, NULL, NULL, &cur_disk.log_zonegroup);
           if (ret < 0) {
             CLS_LOG_BITX(bitx_inst, 0, "ERROR: %s: failed to log operation ret=%d",
 			 __func__, ret);
@@ -2556,7 +2556,7 @@ int rgw_dir_suggest_changes(cls_method_context_t hctx,
 	}
         if (log_op && !header.syncstopped) {
           ret = log_index_operation(hctx, cur_change.key, CLS_RGW_OP_ADD, cur_change.tag, cur_change.meta.mtime,
-                                    cur_change.ver, CLS_RGW_STATE_COMPLETE, header.ver, header.max_marker, 0, NULL, NULL, NULL, NULL); // log for all?
+                                    cur_change.ver, CLS_RGW_STATE_COMPLETE, header.ver, header.max_marker, 0, NULL, NULL, NULL, &cur_change.log_zonegroup);
           if (ret < 0) {
 	    CLS_LOG_BITX(bitx_inst, 0, "ERROR: %s: failed to log operation ret=%d", __func__, ret);
             return ret;

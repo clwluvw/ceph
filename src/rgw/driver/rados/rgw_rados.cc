@@ -10565,11 +10565,6 @@ int RGWRados::check_disk_state(const DoutPrefixProvider *dpp,
   ldout_bitx(bitx, dpp, 10) << "ENTERING " << __func__ << ": bucket=" <<
     bucket_info.bucket << " dir_entry=" << list_state.key << dendl_bitx;
 
-  uint8_t suggest_flag = (
-    svc.datalog_rados->may_log_bucket(dpp, bucket_info, y)
-    ? CEPH_RGW_DIR_SUGGEST_LOG_OP : 0
-  );
-
   std::string loc;
 
   rgw_obj obj(bucket_info.bucket, list_state.key);
@@ -10592,6 +10587,16 @@ int RGWRados::check_disk_state(const DoutPrefixProvider *dpp,
   int r = get_obj_state(dpp, &octx, bucket_info, obj, &astate, &manifest, false, y);
   if (r < 0)
     return r;
+
+  std::string log_zonegroup;
+  if (r = should_log_op(driver, bucket_info.bucket, obj.key.name, astate->attrset, dpp, y, &log_zonegroup); r < 0 && r != -ENOENT) {
+    return r;
+  }
+  const bool log_op = r;
+  if (log_op)
+    list_state.log_zonegroup = log_zonegroup; // XXX: better way to pass it to rgw_dir_suggest_changes()?
+
+  uint8_t suggest_flag = log_op ? CEPH_RGW_DIR_SUGGEST_LOG_OP : 0;
 
   list_state.pending_map.clear(); // we don't need this and it inflates size
   if (!list_state.is_delete_marker() && !astate->exists) {

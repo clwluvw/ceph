@@ -637,7 +637,8 @@ static int remove_expired_obj(const DoutPrefixProvider* dpp,
     return ret;
   }
   const bool log_op = ret;
-  del_op->params.log_zonegroup = &log_zonegroup; // should be set if only log_op is true?
+  if (log_op)
+    del_op->params.log_zonegroup = &log_zonegroup;
 
   uint32_t flags = (log_op && (!remove_indeed || !zonegroup_lc_check(dpp, oc.driver->get_zone())))
                    ? rgw::sal::FLAG_LOG_OP : 0;
