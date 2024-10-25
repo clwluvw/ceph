@@ -1027,8 +1027,7 @@ bool RGWBucketSyncPolicyHandler::bucket_exports_object(const std::string& obj_na
 
   // Without force_priority or dest_pipe, return true on first matching pipe
   for (const auto& entry : pipe_map) {
-    const auto& pipe = entry.second;
-    const auto& filter = pipe.params.source.filter;
+    const auto& filter = entry.second.params.source.filter;
 
     if (filter.check_prefix(obj_name) && filter.check_tags(tags.get_tags())) {
       return true;
