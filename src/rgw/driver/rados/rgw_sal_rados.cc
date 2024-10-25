@@ -2315,11 +2315,6 @@ int RadosObject::delete_obj_attrs(const DoutPrefixProvider* dpp, const char* att
   set_atomic();
   rmattr[attr_name] = bl;
 
-  int r = get_obj_attrs(y, dpp);
-  if (r < 0) {
-    return r;
-  }
-
   return set_obj_attrs(dpp, nullptr, &rmattr, y, log_zonegroup, flags);
 }
 

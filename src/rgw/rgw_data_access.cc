@@ -208,12 +208,8 @@ int RGWDataAccess::Object::put(bufferlist& data,
     puser_data = &(*user_data);
   }
 
-  if (ret = obj->get_obj_attrs(y, dpp); ret < 0) {
-    return ret;
-  }
-
   std::string log_zonegroup;
-  if (ret = should_log_op(driver, b->get_key(), obj->get_name(), obj->get_attrs(), dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
+  if (ret = should_log_op(driver, b->get_key(), obj->get_name(), attrs, dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
     return ret;
   }
   const bool log_op = ret;

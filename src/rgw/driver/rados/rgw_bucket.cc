@@ -149,13 +149,9 @@ int rgw_remove_object(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver, r
 {
   std::unique_ptr<rgw::sal::Object> object = bucket->get_object(key);
 
-  int ret;
-  if (ret = object->get_obj_attrs(y, dpp); ret < 0) {
-    return ret;
-  }
-
+  int ret = 0;
   std::string log_zonegroup;
-  if (ret = should_log_op(driver, bucket->get_key(), object->get_name(), object->get_attrs(), dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
+  if (ret = should_log_op(driver, bucket->get_key(), object.get(), dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
     return ret;
   }
   const bool log_op = ret;
