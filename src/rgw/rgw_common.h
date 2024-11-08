@@ -2028,3 +2028,11 @@ extern int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
                          rgw::sal::Object *object,
                          const DoutPrefixProvider *dpp, optional_yield y,
                          std::string* log_zonegroup);
+
+extern int list_zonegroup_zones(rgw::sal::Driver* driver, const std::string& zonegroup,
+                                const DoutPrefixProvider *dpp, optional_yield y,
+                                std::set<rgw_zone_id>& zones);
+
+extern int list_bucket_zones(rgw::sal::Driver* driver, const rgw_bucket& bucket,
+                             const DoutPrefixProvider *dpp, optional_yield y,
+                             std::set<rgw_zone_id>& zones);

@@ -739,8 +739,6 @@ def check_oidc_providers_eq(zone_conn1, zone_conn2):
         check_oidc_provider_eq(zone_conn1, zone_conn2, p1['Arn'])
 
 def enable_bucket_replication(source_bucket, dest_bucket, prefix=None, tags=None):
-    zones = ",".join([z.name for zg in realm.current_period.zonegroups for z in zg.zones])
-
     z = realm.meta_master_zone() # always use meta master zone
     c = z.cluster
 
@@ -754,7 +752,7 @@ def enable_bucket_replication(source_bucket, dest_bucket, prefix=None, tags=None
     if tags:
         args += ['--tags-add', tags]
 
-    create_sync_group_pipe(c, group_id, "sync-pipe", zones, zones, bucket=source_bucket, dest_bucket=dest_bucket, args=args)
+    create_sync_group_pipe(c, group_id, "sync-pipe", '*', '*', bucket=source_bucket, dest_bucket=dest_bucket, args=args)
     realm_meta_checkpoint(realm)
 
 def get_latest_object_version(key):
