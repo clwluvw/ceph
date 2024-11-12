@@ -150,13 +150,13 @@ int rgw_remove_object(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver, r
   std::unique_ptr<rgw::sal::Object> object = bucket->get_object(key);
 
   int ret = 0;
-  std::string log_zonegroup;
-  if (ret = should_log_op(driver, bucket->get_key(), object.get(), dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (ret = should_log_op(driver, bucket->get_key(), object.get(), dpp, y, log_op_info); ret < 0 && ret != -ENOENT) {
     return ret;
   }
   const bool log_op = ret;
 
-  return object->delete_object(dpp, y, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0, nullptr, nullptr);
+  return object->delete_object(dpp, y, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0, nullptr, nullptr);
 }
 
 static void set_err_msg(std::string *sink, std::string msg)

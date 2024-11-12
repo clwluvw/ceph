@@ -363,7 +363,7 @@ class StoreObject : public Object {
                                        std::optional<uint64_t> days,
                                        const DoutPrefixProvider* dpp,
                                        optional_yield y,
-                                       std::string *log_zonegroup,
+                                       rgw_log_op_info *log_op_info,
                                        uint32_t flags) override {
       return -1;
     }

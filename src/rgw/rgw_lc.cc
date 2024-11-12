@@ -632,13 +632,12 @@ static int remove_expired_obj(const DoutPrefixProvider* dpp,
   del_op->params.bucket_owner = bucket_info.owner;
   del_op->params.unmod_since = meta.mtime;
 
-  std::string log_zonegroup;
-  if (ret = should_log_op(driver, oc.bucket->get_key(), obj->get_name(), obj->get_attrs(), dpp, null_yield, &log_zonegroup); ret < 0 && ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (ret = should_log_op(driver, oc.bucket->get_key(), obj->get_name(), obj->get_attrs(), dpp, null_yield, log_op_info); ret < 0 && ret != -ENOENT) {
     return ret;
   }
   const bool log_op = ret;
-  if (log_op)
-    del_op->params.log_zonegroup = &log_zonegroup;
+  del_op->params.log_op_info = &log_op_info;
 
   uint32_t flags = (log_op && (!remove_indeed || !zonegroup_lc_check(dpp, oc.driver->get_zone())))
                    ? rgw::sal::FLAG_LOG_OP : 0;
@@ -1473,8 +1472,8 @@ public:
         return -EINVAL;
       }
 
-      std::string log_zonegroup;
-      if (r = should_log_op(oc.driver, oc.bucket->get_key(), oc.obj->get_name(), oc.obj->get_attrs(), oc.dpp, null_yield, &log_zonegroup); r < 0 && r != -ENOENT) {
+      rgw_log_op_info log_op_info;
+      if (r = should_log_op(oc.driver, oc.bucket->get_key(), oc.obj->get_name(), oc.obj->get_attrs(), oc.dpp, null_yield, log_op_info); r < 0 && r != -ENOENT) {
         return r;
       }
       const bool log_op = r;
@@ -1482,7 +1481,7 @@ public:
       uint32_t flags = (log_op && !zonegroup_lc_check(oc.dpp, oc.driver->get_zone()))
                        ? rgw::sal::FLAG_LOG_OP : 0;
       int r = oc.obj->transition(oc.bucket, target_placement, o.meta.mtime,
-                                 o.versioned_epoch, oc.dpp, null_yield, &log_zonegroup, flags);
+                                 o.versioned_epoch, oc.dpp, null_yield, &log_op_info, flags);
       if (r < 0) {
         ldpp_dout(oc.dpp, 0) << "ERROR: failed to transition obj " 
 			     << oc.bucket << ":" << o.key 

@@ -621,17 +621,17 @@ class DaosObject : public StoreObject {
   virtual int load_obj_state(const DoutPrefixProvider *dpp, optional_yield y,
                              bool follow_olh = true) override;
   virtual int set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
-                            Attrs* delattrs, optional_yield y, std::string *log_zonegroup, uint32_t flags) override;
+                            Attrs* delattrs, optional_yield y, rgw_log_op_info *log_op_info, uint32_t flags) override;
   virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
                             rgw_obj* target_obj = NULL) override;
   virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
                                optional_yield y,
                                const DoutPrefixProvider* dpp,
-                               std::string *log_zonegroup, uint32_t flags) override;
+                               rgw_log_op_info *log_op_info, uint32_t flags) override;
   virtual int delete_obj_attrs(const DoutPrefixProvider* dpp,
                                const char* attr_name,
                                optional_yield y,
-                               std::string *log_zonegroup, uint32_t flags) override;
+                               rgw_log_op_info *log_op_info, uint32_t flags) override;
   virtual bool is_expired() override;
   virtual void gen_rand_obj_instance_name() override;
   virtual std::unique_ptr<Object> clone() override {
@@ -644,7 +644,7 @@ class DaosObject : public StoreObject {
                          const real_time& mtime, uint64_t olh_epoch,
                          const DoutPrefixProvider* dpp,
                          optional_yield y,
-                         std::string *log_zonegroup,
+                         rgw_log_op_info *log_op_info,
                          uint32_t flags) override;
   virtual int transition_to_cloud(Bucket* bucket, rgw::sal::PlacementTier* tier,
                                   rgw_bucket_dir_entry& o,
@@ -663,7 +663,7 @@ class DaosObject : public StoreObject {
                                      std::optional<uint64_t> days,
                                      const DoutPrefixProvider* dpp,
                                      optional_yield y,
-                                     std::string *log_zonegroup,
+                                     rgw_log_op_info *log_op_info,
                                      uint32_t flags) override;
   virtual bool placement_rules_match(rgw_placement_rule& r1,
                                      rgw_placement_rule& r2) override;
@@ -762,7 +762,7 @@ class DaosAtomicWriter : public StoreWriter {
 		       const std::optional<rgw::cksum::Cksum>& cksum,
                        ceph::real_time delete_at, const char* if_match,
                        const char* if_nomatch, const std::string* user_data,
-                       rgw_zone_set* zones_trace, std::string *log_zonegroup,
+                       rgw_zone_set* zones_trace, rgw_log_op_info *log_op_info,
                        bool* canceled,
                        const req_context& rctx,
                        uint32_t flags) override;
@@ -810,7 +810,7 @@ class DaosMultipartWriter : public StoreWriter {
 		       const std::optional<rgw::cksum::Cksum>& cksum,
                        ceph::real_time delete_at, const char* if_match,
                        const char* if_nomatch, const std::string* user_data,
-                       rgw_zone_set* zones_trace, std::string *log_zonegroup,
+                       rgw_zone_set* zones_trace, rgw_log_op_info *log_op_info,
                        bool* canceled,
                        optional_yield y,
                        uint32_t flags) override;

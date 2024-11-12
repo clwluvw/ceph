@@ -810,7 +810,7 @@ public:
         bool canceled;
         const std::string *user_data;
         rgw_zone_set *zones_trace;
-        std::string *log_zonegroup;
+        rgw_log_op_info *log_op_info;
         bool modify_tail;
         bool completeMultipart;
         bool appendable;
@@ -818,7 +818,7 @@ public:
         MetaParams() : mtime(NULL), rmattrs(NULL), data(NULL), manifest(NULL), ptag(NULL),
                  remove_objs(NULL), category(RGWObjCategory::Main), flags(0),
                  if_match(NULL), if_nomatch(NULL), canceled(false), user_data(nullptr),
-                 zones_trace(nullptr), log_zonegroup(nullptr),
+                 zones_trace(nullptr), log_op_info(nullptr),
                  modify_tail(false),  completeMultipart(false), appendable(false) {}
       } meta;
 
@@ -856,12 +856,12 @@ public:
         ceph::real_time mtime; /* for setting delete marker mtime */
         bool high_precision_time;
         rgw_zone_set *zones_trace;
-        std::string *log_zonegroup;
+        rgw_log_op_info *log_op_info;
 	bool abortmp;
 	uint64_t parts_accounted_size;
 	obj_version *check_objv;
 
-        DeleteParams() : versioning_status(0), null_verid(false), olh_epoch(0), bilog_flags(0), remove_objs(NULL), high_precision_time(false), zones_trace(nullptr), log_zonegroup(nullptr), abortmp(false), parts_accounted_size(0), check_objv(nullptr) {}
+        DeleteParams() : versioning_status(0), null_verid(false), olh_epoch(0), bilog_flags(0), remove_objs(NULL), high_precision_time(false), zones_trace(nullptr), log_op_info(nullptr), abortmp(false), parts_accounted_size(0), check_objv(nullptr) {}
       } params;
 
       struct DeleteResult {
@@ -935,7 +935,7 @@ public:
       bool blind;
       bool prepared{false};
       rgw_zone_set *zones_trace{nullptr};
-      std::string *log_zonegroup{nullptr};
+      rgw_log_op_info *log_op_info{nullptr};
 
       int init_bs(const DoutPrefixProvider *dpp, optional_yield y) {
         int r =
@@ -984,11 +984,11 @@ public:
         zones_trace = _zones_trace;
       }
 
-      void set_log_zonegroup(std::string *_log_zonegroup) {
-        log_zonegroup = _log_zonegroup;
+      void set_log_op_info(rgw_log_op_info *_log_op_info) {
+        log_op_info = _log_op_info;
       }
 
-      int prepare(const DoutPrefixProvider *dpp, RGWModifyOp, const std::string *write_tag, optional_yield y, bool log_op);
+      int prepare(const DoutPrefixProvider *dpp, RGWModifyOp, const std::string *write_tag, optional_yield y);
       int complete(const DoutPrefixProvider *dpp, int64_t poolid, uint64_t epoch, uint64_t size,
                    uint64_t accounted_size, const ceph::real_time& ut,
                    const std::string& etag, const std::string& content_type,
@@ -1238,7 +1238,7 @@ public:
                std::string *petag,
                const DoutPrefixProvider *dpp,
                optional_yield y,
-               std::string *log_zonegroup,
+               rgw_log_op_info *log_op_info,
                bool log_op);
 
   int transition_obj(RGWObjectCtx& obj_ctx,
@@ -1249,7 +1249,7 @@ public:
                      uint64_t olh_epoch,
                      const DoutPrefixProvider *dpp,
                      optional_yield y,
-                     std::string *log_zonegroup,
+                     rgw_log_op_info *log_op_info,
                      bool log_op);
 int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
                            RGWObjectCtx& obj_ctx,
@@ -1262,7 +1262,7 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
                            std::optional<uint64_t> days,
                            const DoutPrefixProvider *dpp,
                            optional_yield y,
-                           std::string *log_zonegroup,
+                           rgw_log_op_info *log_op_info,
                            bool log_op);
 
   int check_bucket_empty(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_info, optional_yield y);
@@ -1295,7 +1295,7 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
 		 uint16_t bilog_flags = 0,
 		 const ceph::real_time& expiration_time = ceph::real_time(),
 		 rgw_zone_set *zones_trace = nullptr,
-                 std::string *log_zonegroup = nullptr,
+                 rgw_log_op_info *log_op_info = nullptr,
                  bool log_op = true); // remove my default val and reorder me
 
   int delete_raw_obj(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj, optional_yield y);
@@ -1303,13 +1303,13 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
   /** Remove an object from the bucket index */
   int delete_obj_index(const rgw_obj& obj, ceph::real_time mtime,
 		       const DoutPrefixProvider *dpp, optional_yield y,
-                       std::string *log_zonegroup, bool log_op);
+                       rgw_log_op_info *log_op_info, bool log_op);
 
   int set_attrs(const DoutPrefixProvider *dpp, RGWObjectCtx* ctx, RGWBucketInfo& bucket_info, const rgw_obj& obj,
                         std::map<std::string, bufferlist>& attrs,
                         std::map<std::string, bufferlist>* rmattrs,
                         optional_yield y,
-                        std::string *log_zonegroup,
+                        rgw_log_op_info *log_op_info,
                         bool log_op,
                         ceph::real_time set_mtime = ceph::real_clock::zero());
 
@@ -1381,7 +1381,7 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
                             ceph::real_time unmod_since, bool high_precision_time,
 			    optional_yield y,
                             rgw_zone_set *zones_trace = nullptr,
-                            std::string *log_zonegroup = nullptr,
+                            rgw_log_op_info *log_op_info = nullptr,
                             bool log_data_change = false);
   int bucket_index_unlink_instance(const DoutPrefixProvider *dpp,
                                    RGWBucketInfo& bucket_info,
@@ -1390,7 +1390,7 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
                                    uint64_t olh_epoch, optional_yield y,
                                    uint16_t bilog_flags,
                                    rgw_zone_set *zones_trace = nullptr,
-                                   std::string *log_zonegroup = nullptr,
+                                   rgw_log_op_info *log_op_info = nullptr,
                                    bool log_op = true); // remove my default val and reorder me
   int bucket_index_read_olh_log(const DoutPrefixProvider *dpp,
                                 RGWBucketInfo& bucket_info, RGWObjState& state,
@@ -1400,9 +1400,9 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
   int bucket_index_clear_olh(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_info, const std::string& olh_tag, const rgw_obj& obj_instance, optional_yield y);
   int apply_olh_log(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx, RGWObjState& obj_state, RGWBucketInfo& bucket_info, const rgw_obj& obj,
                     bufferlist& obj_tag, std::map<uint64_t, std::vector<rgw_bucket_olh_log_entry> >& log,
-                    uint64_t *plast_ver, optional_yield y, bool null_verid, rgw_zone_set *zones_trace = nullptr, std::string *log_zonegroup = nullptr, bool log_op = true); // remove my default val and reorder me
+                    uint64_t *plast_ver, optional_yield y, bool null_verid, rgw_zone_set *zones_trace = nullptr, rgw_log_op_info *log_op_info = nullptr, bool log_op = true); // remove my default val and reorder me
   int update_olh(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx, RGWObjState *state, RGWBucketInfo& bucket_info, const rgw_obj& obj, optional_yield y,
-		 rgw_zone_set *zones_trace = nullptr, std::string *log_zonegroup = nullptr, bool null_verid = false, bool log_op = true); // remove my default val and reorder me
+		 rgw_zone_set *zones_trace = nullptr, rgw_log_op_info *log_op_info = nullptr, bool null_verid = false, bool log_op = true); // remove my default val and reorder me
   int clear_olh(const DoutPrefixProvider *dpp,
                 RGWObjectCtx& obj_ctx,
                 const rgw_obj& obj,
@@ -1421,13 +1421,13 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
 	      bool high_precision_time,
               optional_yield y,
 	      rgw_zone_set *zones_trace = nullptr,
-              std::string *log_zonegroup = nullptr,
+              rgw_log_op_info *log_op_info = nullptr,
 	      bool log_data_change = false,
 	      bool skip_olh_obj_update = false); // can skip the OLH object update if, for example, repairing index
   int repair_olh(const DoutPrefixProvider *dpp, RGWObjState* state, const RGWBucketInfo& bucket_info,
                  const rgw_obj& obj, optional_yield y);
   int unlink_obj_instance(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx, RGWBucketInfo& bucket_info, const rgw_obj& target_obj,
-                          uint64_t olh_epoch, optional_yield y, uint16_t bilog_flags, bool null_verid, rgw_zone_set *zones_trace = nullptr, std::string *log_zonegroup = nullptr, bool log_op = true); // remove my default val and reorder me
+                          uint64_t olh_epoch, optional_yield y, uint16_t bilog_flags, bool null_verid, rgw_zone_set *zones_trace = nullptr, rgw_log_op_info *log_op_info = nullptr, bool log_op = true); // remove my default val and reorder me
 
   void check_pending_olh_entries(const DoutPrefixProvider *dpp, std::map<std::string, bufferlist>& pending_entries, std::map<std::string, bufferlist> *rm_pending_entries);
   int remove_olh_pending_entries(const DoutPrefixProvider *dpp, const RGWBucketInfo& bucket_info, RGWObjState& state, const rgw_obj& olh_obj, std::map<std::string, bufferlist>& pending_attrs, optional_yield y);
@@ -1486,19 +1486,19 @@ public:
                              const DoutPrefixProvider *dpp, optional_yield y);
 
   int cls_obj_prepare_op(const DoutPrefixProvider *dpp, BucketShard& bs, RGWModifyOp op, std::string& tag, rgw_obj& obj,
-                         uint16_t bilog_flags, optional_yield y, rgw_zone_set *zones_trace = nullptr, std::string *log_zonegroup = nullptr, bool log_op = true); // remove my default val and reorder me
+                         uint16_t bilog_flags, optional_yield y);
   int cls_obj_complete_op(BucketShard& bs, const rgw_obj& obj, RGWModifyOp op, std::string& tag, int64_t pool, uint64_t epoch,
                           rgw_bucket_dir_entry& ent, RGWObjCategory category, std::list<rgw_obj_index_key> *remove_objs,
-                          uint16_t bilog_flags, rgw_zone_set *zones_trace = nullptr, std::string *log_zonegroup = nullptr, bool log_op = true); // remove my default val and reorder me
+                          uint16_t bilog_flags, rgw_zone_set *zones_trace = nullptr, rgw_log_op_info *log_op_info = nullptr, bool log_op = true); // remove my default val and reorder me
   int cls_obj_complete_add(BucketShard& bs, const rgw_obj& obj, std::string& tag, int64_t pool, uint64_t epoch, rgw_bucket_dir_entry& ent,
                            RGWObjCategory category, std::list<rgw_obj_index_key> *remove_objs, uint16_t bilog_flags,
-                           rgw_zone_set *zones_trace = nullptr, std::string *log_zonegroup = nullptr, bool log_op = true); // remove my default val and reorder me
+                           rgw_zone_set *zones_trace = nullptr, rgw_log_op_info *log_op_info = nullptr, bool log_op = true); // remove my default val and reorder me
   int cls_obj_complete_del(BucketShard& bs, std::string& tag, int64_t pool, uint64_t epoch, rgw_obj& obj,
                            ceph::real_time& removed_mtime, std::list<rgw_obj_index_key> *remove_objs,
-                           uint16_t bilog_flags, rgw_zone_set *zones_trace = nullptr, std::string *log_zonegroup = nullptr, bool log_op = true); // remove my default val and reorder me
+                           uint16_t bilog_flags, rgw_zone_set *zones_trace = nullptr, rgw_log_op_info *log_op_info = nullptr, bool log_op = true); // remove my default val and reorder me
   int cls_obj_complete_cancel(BucketShard& bs, std::string& tag, rgw_obj& obj,
                               std::list<rgw_obj_index_key> *remove_objs,
-                              uint16_t bilog_flags, rgw_zone_set *zones_trace = nullptr, std::string *log_zonegroup = nullptr, bool log_op = true); // remove my default val and reorder me
+                              uint16_t bilog_flags, rgw_zone_set *zones_trace = nullptr, rgw_log_op_info *log_op_info = nullptr, bool log_op = true); // remove my default val and reorder me
   int cls_obj_set_bucket_tag_timeout(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_info, uint64_t timeout);
 
   using ent_map_t =

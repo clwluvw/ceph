@@ -3229,7 +3229,7 @@ int read_obj_tags(const DoutPrefixProvider *dpp, rgw::sal::Object* obj, optional
 int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
                   const std::string& object_name, const RGWObjTags& tagset,
                   const DoutPrefixProvider *dpp, optional_yield y,
-                  std::string* log_zonegroup)
+                  rgw_log_op_info& log_op_info)
 {
   RGWBucketSyncPolicyHandlerRef policy_handler;
   int ret = driver->get_sync_policy_handler(dpp, std::nullopt, bucket, &policy_handler, y);
@@ -3245,37 +3245,8 @@ int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
     return false;
   }
 
-  if (!log_zonegroup) {
-    return true;
-  }
-
-  if (pipe.dest.bucket) {
-    // load bucket zonegroup everytime by discarding the bucket id
-    // so if the bucket is moved to a different zonegroup, the new zonegroup is used
-    // bucket info is already cached, so this should be cheap
-    rgw_bucket dest_bucket_key(pipe.dest.bucket->tenant, pipe.dest.bucket->name); // to discard bucket_id
-
-    std::unique_ptr<rgw::sal::Bucket> dest_bucket;
-    if (int ret = driver->load_bucket(dpp, dest_bucket_key, &dest_bucket, y); ret < 0) {
-      if (ret != -ENOENT) {
-        ldpp_dout(dpp, 0) << "ERROR: failed to load bucket info for bucket=" << dest_bucket_key << " ret=" << ret << dendl;
-      }
-
-      return ret;
-    }
-
-    *log_zonegroup = dest_bucket->get_info().zonegroup;
-  } else if (pipe.dest.zone) {
-    std::unique_ptr<rgw::sal::Zone> zone;
-    if (int ret = driver->get_zone()->get_zonegroup().get_zone_by_id(pipe.dest.zone->id, &zone); ret < 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to get zone info for zone=" << pipe.dest.zone->id << " ret=" << ret << dendl;
-      return ret;
-    }
-
-    *log_zonegroup = zone->get_zonegroup().get_id();
-  } else {
-    *log_zonegroup = ""; // log for all zones
-  }
+  log_op_info.zones = policy_handler->get_target_zones();
+  log_op_info.zone = pipe.dest.zone;
 
   return true;
 }
@@ -3283,7 +3254,7 @@ int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
 int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
                   const std::string& object_name, const rgw::sal::Attrs& obj_attrs,
                   const DoutPrefixProvider *dpp, optional_yield y,
-                  std::string* log_zonegroup)
+                  rgw_log_op_info& log_op_info)
 {
   RGWObjTags obj_tags;
   const auto& tags = obj_attrs.find(RGW_ATTR_TAGS);
@@ -3296,20 +3267,20 @@ int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
     }
   }
 
-  return should_log_op(driver, bucket, object_name, obj_tags, dpp, y, log_zonegroup);
+  return should_log_op(driver, bucket, object_name, obj_tags, dpp, y, log_op_info);
 }
 
 int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
                   rgw::sal::Object *object,
                   const DoutPrefixProvider *dpp, optional_yield y,
-                  std::string* log_zonegroup)
+                  rgw_log_op_info& log_op_info)
 {
   RGWObjTags obj_tags;
   if (int ret = read_obj_tags(dpp, object, y, obj_tags); ret < 0) {
     return ret;
   }
 
-  return should_log_op(driver, bucket, object->get_name(), obj_tags, dpp, y, log_zonegroup);
+  return should_log_op(driver, bucket, object->get_name(), obj_tags, dpp, y, log_op_info);
 }
 
 int list_zonegroup_zones(rgw::sal::Driver* driver, const std::string& zonegroup,

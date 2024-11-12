@@ -372,7 +372,7 @@ void RGWOp_BILog_List::execute(optional_yield y) {
          bucket_instance = s->info.args.get("bucket-instance"),
          gen_str = s->info.args.get("generation", &gen_specified),
          format_version_str = s->info.args.get("format-ver"),
-         rgwx_zonegroup = s->info.args.get(RGW_SYS_PARAM_PREFIX "zonegroup");
+         rgwx_zone = s->info.args.get(RGW_SYS_PARAM_PREFIX "zone");
   std::unique_ptr<rgw::sal::Bucket> bucket;
   rgw_bucket b(rgw_bucket_key(tenant_name, bucket_name));
 
@@ -461,7 +461,7 @@ void RGWOp_BILog_List::execute(optional_yield y) {
 
     list<rgw_bi_log_entry> zonegroup_entries;
     for (auto& entry : entries) {
-      if (entry.log_zonegroup == rgwx_zonegroup || entry.log_zonegroup.empty() || rgwx_zonegroup.empty()) {
+      if (entry.log_zones.contains(rgwx_zone) || rgwx_zone.empty() || entry.log_zones.empty()) {
         zonegroup_entries.push_back(entry);
       }
     }
@@ -662,7 +662,7 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
   string   shard = s->info.args.get("id"),
            max_entries_str = s->info.args.get("max-entries"),
            marker = s->info.args.get("marker"),
-           rgwx_zonegroup = s->info.args.get(RGW_SYS_PARAM_PREFIX "zonegroup"),
+           rgwx_zone = s->info.args.get(RGW_SYS_PARAM_PREFIX "zone"),
            err;
   unsigned shard_id, max_entries = LOG_CLASS_LIST_MAX_ENTRIES;
 
@@ -697,7 +697,7 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
   // entry listed
   op_ret = static_cast<rgw::sal::RadosStore*>(driver)->svc()->
     datalog_rados->list_entries(this, shard_id, max_entries, entries,
-				marker, &last_marker, &truncated, y, rgwx_zonegroup);
+				marker, &last_marker, &truncated, y, rgwx_zone);
 }
 
 void RGWOp_DATALog_List::send_response() {

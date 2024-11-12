@@ -32,12 +32,8 @@ struct rgw_cls_obj_prepare_op
   cls_rgw_obj_key key;
   std::string tag;
   std::string locator;
-  bool log_op;
-  uint16_t bilog_flags;
-  rgw_zone_set zones_trace;
-  std::string log_zonegroup;
 
-  rgw_cls_obj_prepare_op() : op(CLS_RGW_OP_UNKNOWN), log_op(false), bilog_flags(0) {}
+  rgw_cls_obj_prepare_op() : op(CLS_RGW_OP_UNKNOWN) {}
 
   void encode(ceph::buffer::list &bl) const {
     ENCODE_START(8, 5, bl);
@@ -45,11 +41,7 @@ struct rgw_cls_obj_prepare_op
     encode(c, bl);
     encode(tag, bl);
     encode(locator, bl);
-    encode(log_op, bl);
     encode(key, bl);
-    encode(bilog_flags, bl);
-    encode(zones_trace, bl);
-    encode(log_zonegroup, bl);
     ENCODE_FINISH(bl);
   }
   void decode(ceph::buffer::list::const_iterator &bl) {
@@ -64,20 +56,20 @@ struct rgw_cls_obj_prepare_op
     if (struct_v >= 2) {
       decode(locator, bl);
     }
-    if (struct_v >= 4) {
+    if (struct_v >= 4 && struct_v < 8) {
+      bool log_op;
       decode(log_op, bl);
     }
     if (struct_v >= 5) {
       decode(key, bl);
     }
-    if (struct_v >= 6) {
+    if (struct_v >= 6 && struct_v < 8) {
+      uint16_t bilog_flags;
       decode(bilog_flags, bl);
     }
-    if (struct_v >= 7) {
+    if (struct_v == 7) {
+      rgw_zone_set zones_trace;
       decode(zones_trace, bl);
-    }
-    if (struct_v >= 8) {
-      decode(log_zonegroup, bl);
     }
     DECODE_FINISH(bl);
   }
@@ -99,7 +91,7 @@ struct rgw_cls_obj_complete_op
 
   std::list<cls_rgw_obj_key> remove_objs;
   rgw_zone_set zones_trace;
-  std::string log_zonegroup;
+  std::set<rgw_zone_id> log_zones;
 
   rgw_cls_obj_complete_op() : op(CLS_RGW_OP_ADD), log_op(false), bilog_flags(0) {}
 
@@ -117,7 +109,7 @@ struct rgw_cls_obj_complete_op
     encode(key, bl);
     encode(bilog_flags, bl);
     encode(zones_trace, bl);
-    encode(log_zonegroup, bl);
+    encode(log_zones, bl);
     ENCODE_FINISH(bl);
  }
   void decode(ceph::buffer::list::const_iterator &bl) {
@@ -165,7 +157,7 @@ struct rgw_cls_obj_complete_op
       decode(zones_trace, bl);
     }
     if (struct_v >= 10) {
-      decode(log_zonegroup, bl);
+      decode(log_zones, bl);
     }
     DECODE_FINISH(bl);
   }
@@ -186,7 +178,7 @@ struct rgw_cls_link_olh_op {
   ceph::real_time unmod_since; /* only create delete marker if newer then this */
   bool high_precision_time;
   rgw_zone_set zones_trace;
-  std::string log_zonegroup;
+  std::set<rgw_zone_id> log_zones;
 
   rgw_cls_link_olh_op() : delete_marker(false), olh_epoch(0), log_op(false), bilog_flags(0), high_precision_time(false) {}
 
@@ -205,7 +197,7 @@ struct rgw_cls_link_olh_op {
     encode(unmod_since, bl);
     encode(high_precision_time, bl);
     encode(zones_trace, bl);
-    encode(log_zonegroup, bl);
+    encode(log_zones, bl);
     ENCODE_FINISH(bl);
   }
 
@@ -236,7 +228,7 @@ struct rgw_cls_link_olh_op {
       decode(zones_trace, bl);
     }
     if (struct_v >= 6) {
-      decode(log_zonegroup, bl);
+      decode(log_zones, bl);
     }
     DECODE_FINISH(bl);
   }
@@ -254,7 +246,7 @@ struct rgw_cls_unlink_instance_op {
   uint16_t bilog_flags;
   std::string olh_tag;
   rgw_zone_set zones_trace;
-  std::string log_zonegroup;
+  std::set<rgw_zone_id> log_zones;
 
   rgw_cls_unlink_instance_op() : olh_epoch(0), log_op(false), bilog_flags(0) {}
 
@@ -267,7 +259,7 @@ struct rgw_cls_unlink_instance_op {
     encode(bilog_flags, bl);
     encode(olh_tag, bl);
     encode(zones_trace, bl);
-    encode(log_zonegroup, bl);
+    encode(log_zones, bl);
     ENCODE_FINISH(bl);
   }
 
@@ -285,7 +277,7 @@ struct rgw_cls_unlink_instance_op {
       decode(zones_trace, bl);
     }
     if (struct_v >= 4) {
-      decode(log_zonegroup, bl);
+      decode(log_zones, bl);
     }
     DECODE_FINISH(bl);
   }

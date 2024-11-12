@@ -895,7 +895,13 @@ static int commit_reshard(rgw::sal::RadosStore* store,
     return ret;
   }
 
-  if (store->svc()->datalog_rados->may_log_bucket(dpp, bucket_info, y) && !prev.logs.empty() &&
+  std::set<rgw_zone_id> log_zones;
+  ret = store->svc()->datalog_rados->bucket_sync_targets(bucket_info.bucket, log_zones, y, dpp);
+  if (ret < 0) {
+    return ret;
+  }
+
+  if (!bucket_info.layout.logs.empty() && !log_zones.empty() && !prev.logs.empty() &&
       prev.current_index.layout.type == rgw::BucketIndexType::Normal) {
     // write a datalog entry for each shard of the previous index. triggering
     // sync on the old shards will force them to detect the end-of-log for that
@@ -904,7 +910,7 @@ static int commit_reshard(rgw::sal::RadosStore* store,
     for (uint32_t shard_id = 0; shard_id < rgw::num_shards(prev.current_index.layout.normal); ++shard_id) {
       // This null_yield can stay, for now, since we're in our own thread
       ret = store->svc()->datalog_rados->add_entry(dpp, bucket_info, prev.logs.back(), shard_id,
-						   null_yield, ""); // log for all zones
+						   null_yield, log_zones);
       if (ret < 0) {
         ldpp_dout(dpp, 1) << "WARNING: failed writing data log (bucket_info.bucket="
         << bucket_info.bucket << ", shard_id=" << shard_id << "of generation="

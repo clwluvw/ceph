@@ -898,7 +898,7 @@ int DaosObject::load_obj_state(const DoutPrefixProvider* dpp,
 DaosObject::~DaosObject() { close(nullptr); }
 
 int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
-                              Attrs* delattrs, optional_yield y, std::string *log_zonegroup, uint32_t flags) {
+                              Attrs* delattrs, optional_yield y, rgw_log_op_info *log_op_info, uint32_t flags) {
   ldpp_dout(dpp, 20) << "DEBUG: DaosObject::set_obj_attrs()" << dendl;
   // TODO handle target_obj
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
@@ -933,7 +933,7 @@ int DaosObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
 int DaosObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
                                  optional_yield y,
                                  const DoutPrefixProvider* dpp,
-                                 std::string *log_zonegroup, uint32_t flags) {
+                                 rgw_log_op_info *log_op_info, uint32_t flags) {
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   ldpp_dout(dpp, 20) << "DEBUG: modify_obj_attrs" << dendl;
   rgw_bucket_dir_entry ent;
@@ -952,14 +952,14 @@ int DaosObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
 
 int DaosObject::delete_obj_attrs(const DoutPrefixProvider* dpp,
                                  const char* attr_name, optional_yield y,
-                                 std::string *log_zonegroup, uint32_t flags) {
+                                 rgw_log_op_info *log_op_info, uint32_t flags) {
   ldpp_dout(dpp, 20) << "DEBUG: delete_obj_attrs" << dendl;
   rgw_obj target = get_obj();
   Attrs rmattr;
   bufferlist bl;
 
   rmattr[attr_name] = bl;
-  return set_obj_attrs(dpp, nullptr, &rmattr, y, log_zonegroup, flags);
+  return set_obj_attrs(dpp, nullptr, &rmattr, y, log_op_info, flags);
 }
 
 bool DaosObject::is_expired() {
@@ -1019,7 +1019,7 @@ int DaosObject::transition(Bucket* bucket,
                            const rgw_placement_rule& placement_rule,
                            const real_time& mtime, uint64_t olh_epoch,
                            const DoutPrefixProvider* dpp, optional_yield y,
-                           std::string *log_zonegroup, uint32_t flags) {
+                           rgw_log_op_info *log_op_info, uint32_t flags) {
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
@@ -1041,7 +1041,7 @@ int DaosObject::restore_obj_from_cloud(Bucket* bucket,
                                        std::optional<uint64_t> days,
                                        const DoutPrefixProvider* dpp,
                                        optional_yield y,
-                                       std::string *log_zonegroup,
+                                       rgw_log_op_info *log_op_info,
                                        uint32_t flags)
 {
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
@@ -1214,7 +1214,7 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
   return ret;
 }
 
-int DaosObject::delete_object(const DoutPrefixProvider* dpp, optional_yield y, std::string *log_zonegroup,
+int DaosObject::delete_object(const DoutPrefixProvider* dpp, optional_yield y, rgw_log_op_info *log_op_info,
                               uint32_t flags, std::list<rgw_obj_index_key>* remove_objs,
                               RGWObjVersionTracker* objv) {
   ldpp_dout(dpp, 20) << "DEBUG: delete_object" << dendl;
@@ -1526,7 +1526,7 @@ int DaosAtomicWriter::complete(
     size_t accounted_size, const std::string& etag, ceph::real_time* mtime,
     ceph::real_time set_mtime, std::map<std::string, bufferlist>& attrs,
     ceph::real_time delete_at, const char* if_match, const char* if_nomatch,
-    const std::string* user_data, rgw_zone_set* zones_trace, std::string *log_zonegroup,
+    const std::string* user_data, rgw_zone_set* zones_trace, rgw_log_op_info *log_op_info,
     bool* canceled, optional_yield y, uint32_t flags) {
   ldpp_dout(dpp, 20) << "DEBUG: complete" << dendl;
   bufferlist bl;
@@ -2068,7 +2068,7 @@ int DaosMultipartWriter::complete(
     size_t accounted_size, const std::string& etag, ceph::real_time* mtime,
     ceph::real_time set_mtime, std::map<std::string, bufferlist>& attrs,
     ceph::real_time delete_at, const char* if_match, const char* if_nomatch,
-    const std::string* user_data, rgw_zone_set* zones_trace, std::string *log_zonegroup,
+    const std::string* user_data, rgw_zone_set* zones_trace, rgw_log_op_info *log_op_info,
     bool* canceled, const req_context& rctx, uint32_t flags) {
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): enter part="
                      << part_num_str << dendl;

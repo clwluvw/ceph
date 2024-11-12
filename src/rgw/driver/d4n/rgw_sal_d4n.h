@@ -179,14 +179,14 @@ class D4NFilterObject : public FilterObject {
 
     virtual const std::string &get_name() const override { return next->get_name(); }
     virtual int set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
-                            Attrs* delattrs, optional_yield y, std::string *log_zonegroup, uint32_t flags) override;
+                            Attrs* delattrs, optional_yield y, rgw_log_op_info *log_op_info, uint32_t flags) override;
     virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
                             rgw_obj* target_obj = NULL) override;
     virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
                                optional_yield y, const DoutPrefixProvider* dpp,
-                               std::string *log_zonegroup, uint32_t flags) override;
+                               rgw_log_op_info *log_op_info, uint32_t flags) override;
     virtual int delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr_name,
-                               optional_yield y, std::string *log_zonegroup, uint32_t flags) override;
+                               optional_yield y, rgw_log_op_info *log_op_info, uint32_t flags) override;
     virtual ceph::real_time get_mtime(void) const override { return next->get_mtime(); };
 
     virtual std::unique_ptr<ReadOp> get_read_op() override;
@@ -226,7 +226,7 @@ class D4NFilterWriter : public FilterWriter {
 			 ceph::real_time delete_at,
 			 const char *if_match, const char *if_nomatch,
 			 const std::string *user_data,
-			 rgw_zone_set *zones_trace, std::string *log_zonegroup,
+			 rgw_zone_set *zones_trace, rgw_log_op_info *log_op_info,
                          bool *canceled,
 			 const req_context& rctx,
 			 uint32_t flags) override;

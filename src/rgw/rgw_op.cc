@@ -1048,8 +1048,8 @@ int handle_cloudtier_obj(req_state* s, const DoutPrefixProvider *dpp, rgw::sal::
         return op_ret;
       }
 
-      std::string log_zonegroup;
-      if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), attrs, dpp, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+      rgw_log_op_info log_op_info;
+      if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), attrs, dpp, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
         return op_ret;
       }
       const bool log_op = op_ret;
@@ -1061,7 +1061,7 @@ int handle_cloudtier_obj(req_state* s, const DoutPrefixProvider *dpp, rgw::sal::
 
       auto flags = s->bucket->get_info().flags | (log_op ? rgw::sal::FLAG_LOG_OP : 0);
       op_ret = s->object->restore_obj_from_cloud(pbucket, tier.get(), target_placement, ent, s->cct, tier_config,
-                                                   mtime, epoch, days, dpp, y, &log_zonegroup, flags);
+                                                   mtime, epoch, days, dpp, y, &log_op_info, flags);
       if (op_ret < 0) {
         ldpp_dout(dpp, 0) << "object " << ent.key.name << " fetching failed" << op_ret << dendl;
         s->err.message = "failed to restore object";
@@ -1238,8 +1238,8 @@ void RGWPutObjTags::execute(optional_yield y)
 
   s->object->set_atomic();
 
-  std::string log_zonegroup;
-  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), obj_tags, this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), obj_tags, this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
     return;
   }
   const bool log_op = op_ret;
@@ -1249,7 +1249,7 @@ void RGWPutObjTags::execute(optional_yield y)
     replication_status = "FAILED"; // destination bucket does not exist - fast fail
   }
 
-  op_ret = s->object->modify_obj_attrs(RGW_ATTR_TAGS, tags_bl, y, this, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0);
+  op_ret = s->object->modify_obj_attrs(RGW_ATTR_TAGS, tags_bl, y, this, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0);
   if (op_ret == -ECANCELED){
     op_ret = -ERR_TAG_CONFLICT;
   }
@@ -1290,8 +1290,8 @@ void RGWDeleteObjTags::execute(optional_yield y)
   if (rgw::sal::Object::empty(s->object.get()))
     return;
 
-  std::string log_zonegroup;
-  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), RGWObjTags(), this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), RGWObjTags(), this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
     return;
   }
   const bool log_op = op_ret;
@@ -1301,7 +1301,7 @@ void RGWDeleteObjTags::execute(optional_yield y)
     replication_status = "FAILED"; // destination bucket does not exist - fast fail
   }
 
-  op_ret = s->object->delete_obj_attrs(this, RGW_ATTR_TAGS, y, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0);
+  op_ret = s->object->delete_obj_attrs(this, RGW_ATTR_TAGS, y, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0);
   if (op_ret < 0) {
     return;
   }
@@ -4716,8 +4716,8 @@ void RGWPutObj::execute(optional_yield y)
     }
   }
 
-  std::string log_zonegroup;
-  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), obj_tags, this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), obj_tags, this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
     return;
   }
   const bool log_op = op_ret;
@@ -4820,7 +4820,7 @@ void RGWPutObj::execute(optional_yield y)
 			cksum, (delete_at ? *delete_at : real_time()),
 			if_match, if_nomatch,
 			(user_data.empty() ? nullptr : &user_data),
-			nullptr, &log_zonegroup, nullptr, rctx, complete_flags);
+			nullptr, &log_op_info, nullptr, rctx, complete_flags);
   tracepoint(rgw_op, processor_complete_exit, s->req_id.c_str());
   if (op_ret < 0) {
     return;
@@ -5081,8 +5081,8 @@ void RGWPostObj::execute(optional_yield y)
       }
     }
 
-    std::string log_zonegroup;
-    if (op_ret = should_log_op(driver, s->bucket->get_key(), obj->get_name(), obj_tags, this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+    rgw_log_op_info log_op_info;
+    if (op_ret = should_log_op(driver, s->bucket->get_key(), obj->get_name(), obj_tags, this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
       return;
     }
     const bool log_op = op_ret;
@@ -5102,7 +5102,7 @@ void RGWPostObj::execute(optional_yield y)
     op_ret = processor->complete(s->obj_size, etag, nullptr, real_time(),
 				 attrs, cksum,
 				 (delete_at ? *delete_at : real_time()),
-				 nullptr, nullptr, nullptr, nullptr, &log_zonegroup, nullptr, rctx,
+				 nullptr, nullptr, nullptr, nullptr, &log_op_info, nullptr, rctx,
                                  log_op ? rgw::sal::FLAG_LOG_OP : 0);
     if (op_ret < 0) {
       return;
@@ -5390,8 +5390,8 @@ void RGWPutMetadataObject::execute(optional_yield y)
     }
   }
 
-  std::string log_zonegroup;
-  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
     return;
   }
   const bool log_op = op_ret;
@@ -5407,7 +5407,7 @@ void RGWPutMetadataObject::execute(optional_yield y)
     attrs.emplace(RGW_ATTR_OBJ_REPLICATION_STATUS, std::move(repl_bl));
   }
 
-  op_ret = s->object->set_obj_attrs(this, &attrs, &rmattrs, s->yield, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0);
+  op_ret = s->object->set_obj_attrs(this, &attrs, &rmattrs, s->yield, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0);
 }
 
 int RGWRestoreObj::init_processing(optional_yield y)
@@ -5689,12 +5689,12 @@ void RGWDeleteObj::execute(optional_yield y)
       del_op->params.marker_version_id = version_id;
       del_op->params.null_verid = null_verid;
 
-      std::string log_zonegroup;
-      if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+      rgw_log_op_info log_op_info;
+      if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
         return;
       }
       const bool log_op = op_ret;
-      del_op->params.log_zonegroup = &log_zonegroup;
+      del_op->params.log_op_info = &log_op_info;
 
       op_ret = del_op->delete_obj(this, y, log_op ? rgw::sal::FLAG_LOG_OP : 0);
       if (op_ret >= 0) {
@@ -6326,8 +6326,8 @@ void RGWPutACLs::execute(optional_yield y)
       return;
     }
 
-    std::string log_zonegroup;
-    if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+    rgw_log_op_info log_op_info;
+    if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
       return;
     }
     const bool log_op = op_ret;
@@ -6338,7 +6338,7 @@ void RGWPutACLs::execute(optional_yield y)
     }
 
     // if instance is empty, we should modify the latest object
-    op_ret = s->object->modify_obj_attrs(RGW_ATTR_ACL, bl, s->yield, this, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0);
+    op_ret = s->object->modify_obj_attrs(RGW_ATTR_ACL, bl, s->yield, this, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0);
 
     if ((log_op || replication_status == "FAILED") && op_ret >= 0) {
       set_replication_status_header(this, s->object.get(), y, replication_status);
@@ -7466,12 +7466,12 @@ void RGWDeleteMultiObj::handle_individual_object(const rgw_obj_key& o, optional_
   del_op->params.bucket_owner = s->bucket_owner.id;
   del_op->params.marker_version_id = version_id;
 
-  std::string log_zonegroup;
-  if (op_ret = should_log_op(driver, s->bucket->get_key(), obj->get_name(), obj->get_attrs(), this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (op_ret = should_log_op(driver, s->bucket->get_key(), obj->get_name(), obj->get_attrs(), this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
     return;
   }
   const bool log_op = op_ret;
-  del_op->params.log_zonegroup = &log_zonegroup;
+  del_op->params.log_op_info = &log_op_info;
 
   op_ret = del_op->delete_obj(dpp, y, log_op ? rgw::sal::FLAG_LOG_OP : 0);
   if (op_ret == -ENOENT) {
@@ -7630,12 +7630,12 @@ bool RGWBulkDelete::Deleter::delete_single(const acct_path_t& path, optional_yie
       goto binfo_fail;
     }
 
-    std::string log_zonegroup;
-    if (ret = should_log_op(driver, s->bucket->get_key(), obj->get_name(), obj->get_attrs(), dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
+    rgw_log_op_info log_op_info;
+    if (ret = should_log_op(driver, s->bucket->get_key(), obj->get_name(), obj->get_attrs(), dpp, y, log_op_info); ret < 0 && ret != -ENOENT) {
       goto binfo_fail;
     }
     const bool log_op = ret;
-    del_op->params.log_zonegroup = &log_zonegroup;
+    del_op->params.log_op_info = &log_op_info;
 
     ret = del_op->delete_obj(dpp, y, log_op ? rgw::sal::FLAG_LOG_OP : 0);
     if (ret < 0) {
@@ -8102,8 +8102,8 @@ int RGWBulkUploadOp::handle_file(const std::string_view path,
 
   /* XXX I don't think bulk upload can support checksums */
 
-  std::string log_zonegroup;
-  if (op_ret = should_log_op(driver, s->bucket->get_key(), obj->get_name(), attrs, this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (op_ret = should_log_op(driver, s->bucket->get_key(), obj->get_name(), attrs, this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
     return op_ret;
   }
   const bool log_op = op_ret;
@@ -8124,7 +8124,7 @@ int RGWBulkUploadOp::handle_file(const std::string_view path,
   op_ret = processor->complete(size, etag, nullptr, ceph::real_time(),
                                attrs, rgw::cksum::no_cksum,
                                ceph::real_time() /* delete_at */,
-                               nullptr, nullptr, nullptr, nullptr, &log_zonegroup, nullptr, rctx,
+                               nullptr, nullptr, nullptr, nullptr, &log_op_info, nullptr, rctx,
                                log_op ? rgw::sal::FLAG_LOG_OP : 0);
   if (op_ret < 0) {
     ldpp_dout(this, 20) << "processor::complete returned op_ret=" << op_ret << dendl;
@@ -8349,13 +8349,13 @@ void RGWRMAttrs::execute(optional_yield y)
     return;
   }
 
-  std::string log_zonegroup;
-  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
     return;
   }
   const bool log_op = op_ret;
 
-  op_ret = s->object->set_obj_attrs(this, nullptr, &attrs, y, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0);
+  op_ret = s->object->set_obj_attrs(this, nullptr, &attrs, y, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0);
   if (op_ret < 0) {
     ldpp_dout(this, 0) << "ERROR: failed to delete obj attrs, obj=" << s->object
 		       << " ret=" << op_ret << dendl;
@@ -8393,13 +8393,13 @@ void RGWSetAttrs::execute(optional_yield y)
   if (!rgw::sal::Object::empty(s->object.get())) {
     rgw::sal::Attrs a(attrs);
 
-    std::string log_zonegroup;
-    if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), a, this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+    rgw_log_op_info log_op_info;
+    if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), a, this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
       return;
     }
     const bool log_op = op_ret;
 
-    op_ret = s->object->set_obj_attrs(this, &a, nullptr, y, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0);
+    op_ret = s->object->set_obj_attrs(this, &a, nullptr, y, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0);
   } else {
     op_ret = s->bucket->merge_and_store_attrs(this, attrs, y);
   }
@@ -8918,8 +8918,8 @@ void RGWPutObjRetention::execute(optional_yield y)
     }
   }
 
-  std::string log_zonegroup;
-  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), attrs, this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), attrs, this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
     return;
   }
   const bool log_op = op_ret;
@@ -8929,7 +8929,7 @@ void RGWPutObjRetention::execute(optional_yield y)
     replication_status = "FAILED"; // destination bucket does not exist - fast fail
   }
 
-  op_ret = s->object->modify_obj_attrs(RGW_ATTR_OBJECT_RETENTION, bl, s->yield, this, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0);
+  op_ret = s->object->modify_obj_attrs(RGW_ATTR_OBJECT_RETENTION, bl, s->yield, this, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0);
   if (op_ret < 0) {
     return;
   }
@@ -9043,8 +9043,8 @@ void RGWPutObjLegalHold::execute(optional_yield y) {
     return;
   }
 
-  std::string log_zonegroup;
-  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, &log_zonegroup); op_ret < 0 && op_ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (op_ret = should_log_op(driver, s->bucket->get_key(), s->object->get_name(), s->object->get_attrs(), this, y, log_op_info); op_ret < 0 && op_ret != -ENOENT) {
     return;
   }
   const bool log_op = op_ret;
@@ -9055,7 +9055,7 @@ void RGWPutObjLegalHold::execute(optional_yield y) {
   }
 
   // if instance is empty, we should modify the latest object
-  op_ret = s->object->modify_obj_attrs(RGW_ATTR_OBJECT_LEGAL_HOLD, bl, s->yield, this, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0);
+  op_ret = s->object->modify_obj_attrs(RGW_ATTR_OBJECT_LEGAL_HOLD, bl, s->yield, this, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0);
   if (op_ret < 0) {
     return;
   }
@@ -9399,4 +9399,3 @@ void rgw_slo_entry::decode_json(JSONObj *obj)
   JSONDecoder::decode_json("etag", etag, obj);
   JSONDecoder::decode_json("size_bytes", size_bytes, obj);
 };
-

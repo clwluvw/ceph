@@ -27,6 +27,66 @@ class JSONObj;
 
 using ceph::operator <<;
 
+struct rgw_zone_id {
+  std::string id;
+
+  rgw_zone_id() {}
+  rgw_zone_id(const std::string& _id) : id(_id) {}
+  rgw_zone_id(std::string&& _id) : id(std::move(_id)) {}
+
+  void encode(ceph::buffer::list& bl) const {
+    /* backward compatibility, not using ENCODE_{START,END} macros */
+    ceph::encode(id, bl);
+  }
+
+  void decode(ceph::buffer::list::const_iterator& bl) {
+    /* backward compatibility, not using DECODE_{START,END} macros */
+    ceph::decode(id, bl);
+  }
+
+  void dump(ceph::Formatter *f) const {
+    f->dump_string("id", id);
+  }
+
+  static void generate_test_instances(std::list<rgw_zone_id*>& o) {
+    o.push_back(new rgw_zone_id);
+    o.push_back(new rgw_zone_id("id"));
+  }
+
+  void clear() {
+    id.clear();
+  }
+
+  bool operator==(const std::string& _id) const {
+    return (id == _id);
+  }
+  bool operator==(const rgw_zone_id& zid) const {
+    return (id == zid.id);
+  }
+  bool operator!=(const rgw_zone_id& zid) const {
+    return (id != zid.id);
+  }
+  bool operator<(const rgw_zone_id& zid) const {
+    return (id < zid.id);
+  }
+  bool operator>(const rgw_zone_id& zid) const {
+    return (id > zid.id);
+  }
+
+  bool empty() const {
+    return id.empty();
+  }
+};
+WRITE_CLASS_ENCODER(rgw_zone_id)
+
+inline std::ostream& operator<<(std::ostream& os, const rgw_zone_id& zid) {
+  os << zid.id;
+  return os;
+}
+
+void encode_json(const char *name, const rgw_zone_id& zid, ceph::Formatter *f);
+void decode_json_obj(rgw_zone_id& zid, JSONObj *obj);
+
 struct rgw_zone_set_entry {
   std::string zone;
   std::optional<std::string> location_key;
@@ -392,7 +452,7 @@ struct rgw_bucket_dir_entry {
   std::string tag;
   uint16_t flags;
   uint64_t versioned_epoch;
-  std::string log_zonegroup; // this currently is only being used by check_disk_state() to pass the log_zonegroup to cls in order to log for the correct zonegroup
+  std::set<rgw_zone_id> log_zones; // this currently is only being used by check_disk_state() to pass the log_zones to cls in order to log for the zones
 
   rgw_bucket_dir_entry() :
     exists(false), index_ver(0), flags(0), versioned_epoch(0) {}
@@ -411,7 +471,7 @@ struct rgw_bucket_dir_entry {
     encode(key.instance, bl);
     encode(flags, bl);
     encode(versioned_epoch, bl);
-    encode(log_zonegroup, bl);
+    encode(log_zones, bl);
     ENCODE_FINISH(bl);
   }
   void decode(ceph::buffer::list::const_iterator &bl) {
@@ -443,7 +503,7 @@ struct rgw_bucket_dir_entry {
       decode(versioned_epoch, bl);
     }
     if (struct_v >= 9) {
-      decode(log_zonegroup, bl);
+      decode(log_zones, bl);
     }
     DECODE_FINISH(bl);
   }
@@ -629,7 +689,7 @@ struct rgw_bi_log_entry {
   std::string owner; /* only being set if it's a delete marker */
   std::string owner_display_name; /* only being set if it's a delete marker */
   rgw_zone_set zones_trace;
-  std::string log_zonegroup;
+  std::set<rgw_zone_id> log_zones;
 
   rgw_bi_log_entry() : op(CLS_RGW_OP_UNKNOWN), state(CLS_RGW_STATE_PENDING_MODIFY), index_ver(0), bilog_flags(0) {}
 
@@ -650,7 +710,7 @@ struct rgw_bi_log_entry {
     encode(owner, bl);
     encode(owner_display_name, bl);
     encode(zones_trace, bl);
-    encode(log_zonegroup, bl);
+    encode(log_zones, bl);
     ENCODE_FINISH(bl);
   }
   void decode(ceph::buffer::list::const_iterator &bl) {
@@ -678,7 +738,7 @@ struct rgw_bi_log_entry {
       decode(zones_trace, bl);
     }
     if (struct_v >= 5) {
-      decode(log_zonegroup, bl);
+      decode(log_zones, bl);
     }
     DECODE_FINISH(bl);
   }

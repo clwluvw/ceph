@@ -2272,7 +2272,7 @@ int RadosObject::read_attrs(const DoutPrefixProvider* dpp, RGWRados::Object::Rea
   return read_op.prepare(y, dpp);
 }
 
-int RadosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y, std::string *log_zonegroup, uint32_t flags)
+int RadosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y, rgw_log_op_info *log_op_info, uint32_t flags)
 {
   Attrs empty;
   const bool log_op = flags & rgw::sal::FLAG_LOG_OP;
@@ -2284,7 +2284,7 @@ int RadosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, A
 			get_obj(),
 			setattrs ? *setattrs : empty,
 			delattrs,
-			y, log_zonegroup, log_op, mtime);
+			y, log_op_info, log_op, mtime);
 }
 
 int RadosObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp, rgw_obj* target_obj)
@@ -2295,7 +2295,7 @@ int RadosObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp, 
   return read_attrs(dpp, read_op, y, target_obj);
 }
 
-int RadosObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val, optional_yield y, const DoutPrefixProvider* dpp, std::string *log_zonegroup, uint32_t flags)
+int RadosObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val, optional_yield y, const DoutPrefixProvider* dpp, rgw_log_op_info *log_op_info, uint32_t flags)
 {
   rgw_obj target = get_obj();
   rgw_obj save = get_obj();
@@ -2309,14 +2309,14 @@ int RadosObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val, o
   set_atomic();
   state.attrset[attr_name] = attr_val;
 
-  r = set_obj_attrs(dpp, &state.attrset, nullptr, y, log_zonegroup, flags);
+  r = set_obj_attrs(dpp, &state.attrset, nullptr, y, log_op_info, flags);
   /* Restore target */
   state.obj = save;
 
   return r;
 }
 
-int RadosObject::delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr_name, optional_yield y, std::string *log_zonegroup, uint32_t flags)
+int RadosObject::delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr_name, optional_yield y, rgw_log_op_info *log_op_info, uint32_t flags)
 {
   Attrs rmattr;
   bufferlist bl;
@@ -2324,7 +2324,7 @@ int RadosObject::delete_obj_attrs(const DoutPrefixProvider* dpp, const char* att
   set_atomic();
   rmattr[attr_name] = bl;
 
-  return set_obj_attrs(dpp, nullptr, &rmattr, y, log_zonegroup, flags);
+  return set_obj_attrs(dpp, nullptr, &rmattr, y, log_op_info, flags);
 }
 
 bool RadosObject::is_expired() {
@@ -2478,13 +2478,13 @@ int RadosObject::chown(User& new_user, const DoutPrefixProvider* dpp, optional_y
   map<string, bufferlist> attrs;
   attrs[RGW_ATTR_ACL] = bl;
 
-  std::string log_zonegroup;
-  if (r = should_log_op(store, bucket->get_key(), get_name(), get_attrs(), dpp, y, &log_zonegroup); r < 0) {
+  rgw_log_op_info log_op_info;
+  if (r = should_log_op(store, bucket->get_key(), get_name(), get_attrs(), dpp, y, log_op_info); r < 0) {
     return r;
   }
   const bool log_op = r;
 
-  r = set_obj_attrs(dpp, &attrs, nullptr, y, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0);
+  r = set_obj_attrs(dpp, &attrs, nullptr, y, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0);
   if (r < 0) {
     ldpp_dout(dpp, 0) << "ERROR: modify attr failed " << cpp_strerror(-r) << dendl;
     return r;
@@ -2504,11 +2504,11 @@ int RadosObject::transition(Bucket* bucket,
 			    uint64_t olh_epoch,
 			    const DoutPrefixProvider* dpp,
 			    optional_yield y,
-                            std::string *log_zonegroup,
+                            rgw_log_op_info *log_op_info,
                             uint32_t flags)
 {
   return store->getRados()->transition_obj(*rados_ctx, bucket->get_info(), get_obj(), placement_rule,
-                                           mtime, olh_epoch, dpp, y, log_zonegroup, flags & FLAG_LOG_OP);
+                                           mtime, olh_epoch, dpp, y, log_op_info, flags & FLAG_LOG_OP);
 }
 
 int RadosObject::restore_obj_from_cloud(Bucket* bucket,
@@ -2522,7 +2522,7 @@ int RadosObject::restore_obj_from_cloud(Bucket* bucket,
                                         std::optional<uint64_t> days,
                                         const DoutPrefixProvider* dpp,
                                         optional_yield y,
-                                        std::string *log_zonegroup,
+                                        rgw_log_op_info *log_op_info,
                                         uint32_t flags)
 {
   /* init */
@@ -2587,7 +2587,7 @@ int RadosObject::restore_obj_from_cloud(Bucket* bucket,
   ret = store->getRados()->restore_obj_from_cloud(tier_ctx, *rados_ctx,
                                 bucket->get_info(), get_obj(), placement_rule,
                                 tier_config,
-                                mtime, olh_epoch, days, dpp, y, log_zonegroup, flags & FLAG_LOG_OP);
+                                mtime, olh_epoch, days, dpp, y, log_op_info, flags & FLAG_LOG_OP);
 
   if (ret < 0) { //failed to restore
     ldpp_dout(dpp, 0) << "Restoring object(" << o.key << ") from the cloud endpoint(" << endpoint << ") failed, ret=" << ret << dendl;
@@ -2755,7 +2755,7 @@ int RadosObject::handle_obj_expiry(const DoutPrefixProvider* dpp, optional_yield
           obj_op.meta.if_nomatch = NULL;
           obj_op.meta.user_data = NULL;
           obj_op.meta.zones_trace = NULL;
-          obj_op.meta.log_zonegroup = NULL;
+          obj_op.meta.log_op_info = NULL;
           obj_op.meta.set_mtime = read_mtime;
 
           RGWObjManifest *pmanifest;
@@ -2798,13 +2798,13 @@ int RadosObject::handle_obj_expiry(const DoutPrefixProvider* dpp, optional_yield
   if (is_expired()) {
     ldpp_dout(dpp, 10) << "Deleting expired obj:" << get_key() << dendl;
 
-    std::string log_zonegroup;
-    if (ret = should_log_op(store, bucket->get_key(), obj->get_name(), attrs, dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
+    rgw_log_op_info log_op_info;
+    if (ret = should_log_op(store, bucket->get_key(), obj->get_name(), attrs, dpp, y, log_op_info); ret < 0 && ret != -ENOENT) {
       return ret;
     }
     const bool log_op = ret;
 
-    ret = obj->delete_object(dpp, null_yield, &log_zonegroup, log_op ? rgw::sal::FLAG_LOG_OP : 0, nullptr, nullptr);
+    ret = obj->delete_object(dpp, null_yield, &log_op_info, log_op ? rgw::sal::FLAG_LOG_OP : 0, nullptr, nullptr);
   }
 
   return ret;
@@ -2833,7 +2833,7 @@ int RadosObject::write_cloud_tier(const DoutPrefixProvider* dpp,
   obj_op.meta.if_nomatch = NULL;
   obj_op.meta.user_data = NULL;
   obj_op.meta.zones_trace = NULL;
-  obj_op.meta.log_zonegroup = NULL;
+  obj_op.meta.log_op_info = NULL;
   obj_op.meta.olh_epoch = olh_epoch;
 
   RGWObjManifest *pmanifest;
@@ -3033,7 +3033,7 @@ int RadosObject::RadosDeleteOp::delete_obj(const DoutPrefixProvider* dpp, option
   parent_op.params.mtime = params.mtime;
   parent_op.params.high_precision_time = params.high_precision_time;
   parent_op.params.zones_trace = params.zones_trace;
-  parent_op.params.log_zonegroup = params.log_zonegroup;
+  parent_op.params.log_op_info = params.log_op_info;
   parent_op.params.abortmp = params.abortmp;
   parent_op.params.parts_accounted_size = params.parts_accounted_size;
   parent_op.params.null_verid = params.null_verid;
@@ -3053,7 +3053,7 @@ int RadosObject::RadosDeleteOp::delete_obj(const DoutPrefixProvider* dpp, option
 
 int RadosObject::delete_object(const DoutPrefixProvider* dpp,
 			       optional_yield y,
-                               std::string *log_zonegroup,
+                               rgw_log_op_info *log_op_info,
 			       uint32_t flags,
 			       std::list<rgw_obj_index_key>* remove_objs,
 			       RGWObjVersionTracker* objv)
@@ -3068,7 +3068,7 @@ int RadosObject::delete_object(const DoutPrefixProvider* dpp,
   if (objv) {
       del_op.params.check_objv = objv->version_for_check();
   }
-  del_op.params.log_zonegroup = log_zonegroup;
+  del_op.params.log_op_info = log_op_info;
 
   return del_op.delete_obj(y, dpp, flags & FLAG_LOG_OP);
 }
@@ -3761,12 +3761,12 @@ int RadosMultipartUpload::complete(const DoutPrefixProvider *dpp,
   obj_op.meta.completeMultipart = true;
   obj_op.meta.olh_epoch = olh_epoch;
 
-  std::string log_zonegroup;
-  if (ret = should_log_op(store, target_obj->get_bucket()->get_key(), target_obj->get_name(), attrs, dpp, y, &log_zonegroup); ret < 0 && ret != -ENOENT) {
+  rgw_log_op_info log_op_info;
+  if (ret = should_log_op(store, target_obj->get_bucket()->get_key(), target_obj->get_name(), attrs, dpp, y, log_op_info); ret < 0 && ret != -ENOENT) {
     return ret;
   }
   const bool log_op = ret;
-  obj_op.meta.log_zonegroup = &log_zonegroup;
+  obj_op.meta.log_op_info = &log_op_info;
 
   if (log_op || ret == -ENOENT) {
     std::string replication_status = "PENDING";
@@ -4117,14 +4117,14 @@ int RadosAtomicWriter::complete(size_t accounted_size, const std::string& etag,
                        ceph::real_time delete_at,
                        const char *if_match, const char *if_nomatch,
                        const std::string *user_data,
-                       rgw_zone_set *zones_trace, std::string *log_zonegroup,
+                       rgw_zone_set *zones_trace, rgw_log_op_info *log_op_info,
                        bool *canceled,
                        const req_context& rctx,
                        uint32_t flags)
 {
   return processor.complete(accounted_size, etag, mtime, set_mtime, attrs,
 			    cksum, delete_at, if_match, if_nomatch,
-			    user_data, zones_trace, log_zonegroup, canceled, rctx, flags);
+			    user_data, zones_trace, log_op_info, canceled, rctx, flags);
 }
 
 int RadosAppendWriter::prepare(optional_yield y)
@@ -4144,14 +4144,14 @@ int RadosAppendWriter::complete(size_t accounted_size, const std::string& etag,
                        ceph::real_time delete_at,
                        const char *if_match, const char *if_nomatch,
                        const std::string *user_data,
-                       rgw_zone_set *zones_trace, std::string *log_zonegroup,
+                       rgw_zone_set *zones_trace, rgw_log_op_info *log_op_info,
                        bool *canceled,
                        const req_context& rctx,
                        uint32_t flags)
 {
   return processor.complete(accounted_size, etag, mtime, set_mtime, attrs,
 			    cksum, delete_at, if_match, if_nomatch,
-			    user_data, zones_trace, log_zonegroup, canceled, rctx, flags);
+			    user_data, zones_trace, log_op_info, canceled, rctx, flags);
 }
 
 int RadosMultipartWriter::prepare(optional_yield y)
@@ -4173,14 +4173,14 @@ int RadosMultipartWriter::complete(
                        ceph::real_time delete_at,
                        const char *if_match, const char *if_nomatch,
                        const std::string *user_data,
-                       rgw_zone_set *zones_trace, std::string *log_zonegroup,
+                       rgw_zone_set *zones_trace, rgw_log_op_info *log_op_info,
                        bool *canceled,
                        const req_context& rctx,
                        uint32_t flags)
 {
   return processor.complete(accounted_size, etag, mtime, set_mtime, attrs,
 			    cksum, delete_at, if_match, if_nomatch,
-			    user_data, zones_trace, log_zonegroup, canceled, rctx, flags);
+			    user_data, zones_trace, log_op_info, canceled, rctx, flags);
 }
 
 bool RadosZoneGroup::placement_target_exists(std::string& target) const

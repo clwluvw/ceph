@@ -111,7 +111,7 @@ int D4NFilterBucket::create(const DoutPrefixProvider* dpp,
 }
 
 int D4NFilterObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
-                            Attrs* delattrs, optional_yield y, std::string *log_zonegroup, uint32_t flags)
+                            Attrs* delattrs, optional_yield y, rgw_log_op_info *log_op_info, uint32_t flags)
 {
   if (setattrs != NULL) {
     /* Ensure setattrs and delattrs do not overlap */
@@ -142,7 +142,7 @@ int D4NFilterObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattr
       ldpp_dout(dpp, 10) << "D4NFilterObject::" << __func__ << "(): CacheDriver delete_attrs method failed." << dendl;
   }
 
-  return next->set_obj_attrs(dpp, setattrs, delattrs, y, log_zonegroup, flags);
+  return next->set_obj_attrs(dpp, setattrs, delattrs, y, log_op_info, flags);
 }
 
 int D4NFilterObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
@@ -207,7 +207,7 @@ int D4NFilterObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* d
 
 int D4NFilterObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
                                optional_yield y, const DoutPrefixProvider* dpp,
-                               std::string *log_zonegroup, uint32_t flags)
+                               rgw_log_op_info *log_op_info, uint32_t flags)
 {
   Attrs update;
   update[(std::string)attr_name] = attr_val;
@@ -215,11 +215,11 @@ int D4NFilterObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_va
   if (driver->get_cache_driver()->update_attrs(dpp, this->get_key().get_oid(), update, y) < 0)
     ldpp_dout(dpp, 10) << "D4NFilterObject::" << __func__ << "(): CacheDriver update_attrs method failed." << dendl;
 
-  return next->modify_obj_attrs(attr_name, attr_val, y, dpp, log_zonegroup, flags);
+  return next->modify_obj_attrs(attr_name, attr_val, y, dpp, log_op_info, flags);
 }
 
 int D4NFilterObject::delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr_name,
-                               optional_yield y, std::string *log_zonegroup, uint32_t flags)
+                               optional_yield y, rgw_log_op_info *log_op_info, uint32_t flags)
 {
   buffer::list bl;
   Attrs delattr;
@@ -234,7 +234,7 @@ int D4NFilterObject::delete_obj_attrs(const DoutPrefixProvider* dpp, const char*
     if (driver->get_cache_driver()->delete_attrs(dpp, this->get_key().get_oid(), delattr, y) < 0)
       ldpp_dout(dpp, 10) << "D4NFilterObject::" << __func__ << "(): CacheDriver delete_attrs method failed." << dendl;
   } else
-    return next->delete_obj_attrs(dpp, attr_name, y, log_zonegroup, flags);
+    return next->delete_obj_attrs(dpp, attr_name, y, log_op_info, flags);
 
   return 0;
 }
@@ -816,7 +816,7 @@ int D4NFilterWriter::complete(size_t accounted_size, const std::string& etag,
                               ceph::real_time delete_at,
                               const char *if_match, const char *if_nomatch,
                               const std::string *user_data,
-                              rgw_zone_set *zones_trace, std::string *log_zonegroup,
+                              rgw_zone_set *zones_trace, rgw_log_op_info *log_op_info,
                               bool *canceled,
                               const req_context& rctx,
                               uint32_t flags)
@@ -834,7 +834,7 @@ int D4NFilterWriter::complete(size_t accounted_size, const std::string& etag,
    
   /* Retrieve complete set of attrs */
   int ret = next->complete(accounted_size, etag, mtime, set_mtime, attrs, cksum,
-			delete_at, if_match, if_nomatch, user_data, zones_trace, log_zonegroup,
+			delete_at, if_match, if_nomatch, user_data, zones_trace, log_op_info,
 			canceled, rctx, flags);
   obj->get_obj_attrs(rctx.y, save_dpp, NULL);
 

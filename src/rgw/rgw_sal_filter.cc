@@ -1003,12 +1003,12 @@ int FilterBucket::abort_multiparts(const DoutPrefixProvider* dpp, CephContext* c
 
 int FilterObject::delete_object(const DoutPrefixProvider* dpp,
 				optional_yield y,
-                                std::string *log_zonegroup,
+                                rgw_log_op_info *log_op_info,
 				uint32_t flags,
 				std::list<rgw_obj_index_key>* remove_objs,
 				RGWObjVersionTracker* objv)
 {
-  return next->delete_object(dpp, y, log_zonegroup, flags, remove_objs, objv);
+  return next->delete_object(dpp, y, log_op_info, flags, remove_objs, objv);
 }
 
 int FilterObject::copy_object(const ACLOwner& owner,
@@ -1062,9 +1062,9 @@ int FilterObject::load_obj_state(const DoutPrefixProvider *dpp,
 }
 
 int FilterObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
-				Attrs* delattrs, optional_yield y, std::string *log_zonegroup, uint32_t flags)
+				Attrs* delattrs, optional_yield y, rgw_log_op_info *log_op_info, uint32_t flags)
 {
-  return next->set_obj_attrs(dpp, setattrs, delattrs, y, log_zonegroup, flags);
+  return next->set_obj_attrs(dpp, setattrs, delattrs, y, log_op_info, flags);
 }
 
 int FilterObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
@@ -1075,16 +1075,16 @@ int FilterObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
 
 int FilterObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
 				   optional_yield y, const DoutPrefixProvider* dpp,
-                                   std::string *log_zonegroup, uint32_t flags)
+                                   rgw_log_op_info *log_op_info, uint32_t flags)
 {
-  return next->modify_obj_attrs(attr_name, attr_val, y, dpp, log_zonegroup, flags);
+  return next->modify_obj_attrs(attr_name, attr_val, y, dpp, log_op_info, flags);
 }
 
 int FilterObject::delete_obj_attrs(const DoutPrefixProvider* dpp,
 				   const char* attr_name, optional_yield y,
-                                   std::string *log_zonegroup, uint32_t flags)
+                                   rgw_log_op_info *log_op_info, uint32_t flags)
 {
-  return next->delete_obj_attrs(dpp, attr_name, y, log_zonegroup, flags);
+  return next->delete_obj_attrs(dpp, attr_name, y, log_op_info, flags);
 }
 
 bool FilterObject::is_expired()
@@ -1110,11 +1110,11 @@ int FilterObject::transition(Bucket* bucket,
 			     uint64_t olh_epoch,
 			     const DoutPrefixProvider* dpp,
 			     optional_yield y,
-                             std::string *log_zonegroup,
+                             rgw_log_op_info *log_op_info,
                              uint32_t flags)
 {
   return next->transition(nextBucket(bucket), placement_rule, mtime, olh_epoch,
-			  dpp, y, log_zonegroup, flags);
+			  dpp, y, log_op_info, flags);
 }
 
 int FilterObject::transition_to_cloud(Bucket* bucket,
@@ -1141,11 +1141,11 @@ int FilterObject::restore_obj_from_cloud(Bucket* bucket,
                                          std::optional<uint64_t> days,
                                          const DoutPrefixProvider* dpp,
                                          optional_yield y,
-                                         std::string *log_zonegroup,
+                                         rgw_log_op_info *log_op_info,
                                          uint32_t flags)
 {
   return next->restore_obj_from_cloud(nextBucket(bucket), nextPlacementTier(tier),
-           placement_rule, o, cct, tier_config, mtime, olh_epoch, days, dpp, y, log_zonegroup, flags);
+           placement_rule, o, cct, tier_config, mtime, olh_epoch, days, dpp, y, log_op_info, flags);
 }
 
 bool FilterObject::placement_rules_match(rgw_placement_rule& r1, rgw_placement_rule& r2)
@@ -1449,13 +1449,13 @@ int FilterWriter::complete(size_t accounted_size, const std::string& etag,
                        ceph::real_time delete_at,
                        const char *if_match, const char *if_nomatch,
                        const std::string *user_data,
-                       rgw_zone_set *zones_trace, std::string *log_zonegroup,
+                       rgw_zone_set *zones_trace, rgw_log_op_info *log_op_info,
                        bool *canceled,
                        const req_context& rctx,
                        uint32_t flags)
 {
   return next->complete(accounted_size, etag, mtime, set_mtime, attrs, cksum,
-			delete_at, if_match, if_nomatch, user_data, zones_trace, log_zonegroup,
+			delete_at, if_match, if_nomatch, user_data, zones_trace, log_op_info,
 			canceled, rctx, flags);
 }
 
