@@ -3276,7 +3276,7 @@ int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
                   rgw_log_op_info& log_op_info)
 {
   RGWObjTags obj_tags;
-  if (int ret = read_obj_tags(dpp, object, y, obj_tags); ret < 0) {
+  if (int ret = read_obj_tags(dpp, object, y, obj_tags); ret < 0 && ret != -ENODATA) {
     return ret;
   }
 
