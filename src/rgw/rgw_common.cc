@@ -3226,6 +3226,21 @@ int read_obj_tags(const DoutPrefixProvider *dpp, rgw::sal::Object* obj, optional
   return 0;
 }
 
+int should_log_op(RGWBucketSyncPolicyHandlerRef& policy_handler,
+                  const std::string& object_name, const RGWObjTags& tagset,
+                  rgw_log_op_info& log_op_info)
+{
+  rgw_sync_bucket_pipe pipe;
+  if (!policy_handler->bucket_exports_object(object_name, tagset, &pipe)) {
+    return false;
+  }
+
+  log_op_info.zones = policy_handler->get_target_zones();
+  log_op_info.zone = pipe.dest.zone;
+
+  return true;
+}
+
 int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
                   const std::string& object_name, const RGWObjTags& tagset,
                   const DoutPrefixProvider *dpp, optional_yield y,
@@ -3240,15 +3255,7 @@ int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
     return false;
   }
 
-  rgw_sync_bucket_pipe pipe;
-  if (!policy_handler->bucket_exports_object(object_name, tagset, &pipe)) {
-    return false;
-  }
-
-  log_op_info.zones = policy_handler->get_target_zones();
-  log_op_info.zone = pipe.dest.zone;
-
-  return true;
+  return should_log_op(policy_handler, object_name, tagset, log_op_info);
 }
 
 int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
@@ -3256,6 +3263,15 @@ int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
                   const DoutPrefixProvider *dpp, optional_yield y,
                   rgw_log_op_info& log_op_info)
 {
+  RGWBucketSyncPolicyHandlerRef policy_handler;
+  int ret = driver->get_sync_policy_handler(dpp, std::nullopt, bucket, &policy_handler, y);
+  if (ret < 0) {
+    ldpp_dout(dpp, 0) << "failed to read sync policy for bucket=" << bucket << " ret=" << ret << dendl;
+    return ret;
+  } else if (!policy_handler) { // no policy, no logging
+    return false;
+  }
+
   RGWObjTags obj_tags;
   const auto& tags = obj_attrs.find(RGW_ATTR_TAGS);
   if (tags != obj_attrs.end()) {
@@ -3267,7 +3283,7 @@ int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
     }
   }
 
-  return should_log_op(driver, bucket, object_name, obj_tags, dpp, y, log_op_info);
+  return should_log_op(policy_handler, object_name, obj_tags, log_op_info);
 }
 
 int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
@@ -3275,12 +3291,21 @@ int should_log_op(rgw::sal::Driver* driver, const rgw_bucket& bucket,
                   const DoutPrefixProvider *dpp, optional_yield y,
                   rgw_log_op_info& log_op_info)
 {
+  RGWBucketSyncPolicyHandlerRef policy_handler;
+  int ret = driver->get_sync_policy_handler(dpp, std::nullopt, bucket, &policy_handler, y);
+  if (ret < 0) {
+    ldpp_dout(dpp, 0) << "failed to read sync policy for bucket=" << bucket << " ret=" << ret << dendl;
+    return ret;
+  } else if (!policy_handler) { // no policy, no logging
+    return false;
+  }
+
   RGWObjTags obj_tags;
   if (int ret = read_obj_tags(dpp, object, y, obj_tags); ret < 0 && ret != -ENODATA) {
     return ret;
   }
 
-  return should_log_op(driver, bucket, object->get_name(), obj_tags, dpp, y, log_op_info);
+  return should_log_op(policy_handler, object->get_name(), obj_tags, log_op_info);
 }
 
 int list_zonegroup_zones(rgw::sal::Driver* driver, const std::string& zonegroup,
