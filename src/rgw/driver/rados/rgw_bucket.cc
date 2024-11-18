@@ -2821,12 +2821,9 @@ int RGWBucketInstanceMetadataHandler::put_prepare(
       // not my bucket, mark it as an indexless bucket
       bci.info.layout = rgw::BucketLayout{};
       bci.info.layout.current_index.layout.type = rgw::BucketIndexType::Indexless;
-      return 0;
-    }
-
-    // bucket layout information is local. don't overwrite existing layout with
-    // information from a remote zone
-    if (old_bci) {
+    } else if (old_bci) {
+      // bucket layout information is local. don't overwrite existing layout with
+      // information from a remote zone
       bci.info.layout = old_bci->info.layout;
     } else {
       // replace peer's layout with default-constructed, then apply our defaults
@@ -2856,14 +2853,17 @@ int RGWBucketInstanceMetadataHandler::put_prepare(
         return ret;
       }
     }
-    bci.info.layout.current_index.layout.type = rule_info.index_type;
+
+    if (bci.info.zonegroup == driver->get_zone()->get_zonegroup().get_id()) {
+      bci.info.layout.current_index.layout.type = rule_info.index_type;
+    }
   } else {
     /* existing bucket, keep its placement */
     bci.info.bucket.explicit_placement = old_bci->info.bucket.explicit_placement;
     bci.info.placement_rule = old_bci->info.placement_rule;
   }
 
-  //always keep bucket versioning enabled on archive zone
+  // always keep bucket versioning enabled on archive zone
   if (driver->get_zone()->get_tier_type() == "archive") {
     bci.info.flags = (bci.info.flags & ~BUCKET_VERSIONS_SUSPENDED) | BUCKET_VERSIONED;
   }
