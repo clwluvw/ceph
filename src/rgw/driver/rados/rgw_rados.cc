@@ -9018,7 +9018,14 @@ int RGWRados::follow_olh(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_in
   if (!pending_entries.empty()) {
     ldpp_dout(dpp, 20) << __func__ << "(): found pending entries, need to update_olh() on bucket=" << olh_obj.bucket << dendl;
 
-    int ret = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y, nullptr, nullptr, false, false);
+    rgw_log_op_info log_op_info;
+    int ret = should_log_op(driver, olh_obj.bucket, olh_obj.key.name, state->attrset, dpp, y, log_op_info);
+    if (ret < 0 && ret != -ENOENT) {
+      return ret;
+    }
+    const bool log_op = ret;
+
+    ret = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y, nullptr, &log_op_info, false, log_op);
     if (ret < 0) {
       if (ret == -ECANCELED) {
         // In this context, ECANCELED means that the OLH tag changed in either the bucket index entry or the OLH object.

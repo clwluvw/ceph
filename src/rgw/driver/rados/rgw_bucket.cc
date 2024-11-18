@@ -676,8 +676,16 @@ static int check_index_olh(rgw::sal::RadosStore* const rados_store,
             ldpp_dout(dpp, -1) << "ERROR failed to load state for: " << olh_entry.key.name << " load_obj_state(): " << cpp_strerror(-ret) << dendl;
             continue;
           }
+
+          rgw_log_op_info log_op_info;
+          if (ret = should_log_op(rados_store, bucket->get_key(), object.get(), dpp, y, log_op_info); ret < 0 && ret != -ENOENT) {
+            ldpp_dout(dpp, -1) << "ERROR failed to check log operation for: " << olh_entry.key.name << " should_log_op(): " << cpp_strerror(-ret) << dendl;
+            continue;
+          }
+          const bool log_op = ret;
+
 	  RGWObjState& state = static_cast<rgw::sal::RadosObject*>(object.get())->get_state();
-          ret = store->update_olh(dpp, obj_ctx, &state, bucket->get_info(), obj, y, nullptr, nullptr, false, false);
+          ret = store->update_olh(dpp, obj_ctx, &state, bucket->get_info(), obj, y, nullptr, &log_op_info, false, log_op);
           if (ret < 0) {
             ldpp_dout(dpp, -1) << "ERROR failed to update olh for: " << olh_entry.key.name << " update_olh(): " << cpp_strerror(-ret) << dendl;
             continue;
