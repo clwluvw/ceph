@@ -352,11 +352,11 @@ int RGWCtlDef::init(RGWServices& svc, rgw::sal::Driver* driver,
   if (sync_module) {
     meta.bucket = sync_module->alloc_bucket_meta_handler(rados, svc.bucket, bucket.get());
     meta.bucket_instance = sync_module->alloc_bucket_instance_meta_handler(
-        driver, svc.zone, svc.bucket, svc.bi, svc.datalog_rados);
+        driver, svc.zone, svc.bucket, svc.bi, svc.datalog_manager);
   } else {
     meta.bucket = create_bucket_metadata_handler(rados, svc.bucket, bucket.get());
     meta.bucket_instance = create_bucket_instance_metadata_handler(
-        driver, svc.zone, svc.bucket, svc.bi, svc.datalog_rados);
+        driver, svc.zone, svc.bucket, svc.bi, svc.datalog_manager);
   }
 
   meta.otp = rgwrados::otp::create_metadata_handler(

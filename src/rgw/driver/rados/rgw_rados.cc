@@ -780,7 +780,7 @@ int RGWRados::get_max_chunk_size(const rgw_placement_rule& placement_rule, const
 }
 
 [[nodiscard]] int add_datalog_entry(const DoutPrefixProvider* dpp,
-				    RGWDataChangesLog* datalog,
+				    RGWDataChangesLogManager* datalog_manager,
 				    const RGWBucketInfo& bucket_info,
 				    uint32_t shard_id, optional_yield y)
 {
@@ -788,7 +788,7 @@ int RGWRados::get_max_chunk_size(const rgw_placement_rule& placement_rule, const
   if (logs.empty()) {
     return 0;
   }
-  int r = datalog->add_entry(dpp, bucket_info, logs.back(), shard_id, y);
+  int r = datalog_manager->add_entry(dpp, bucket_info, logs.back(), shard_id, y);
   if (r < 0) {
     ldpp_dout(dpp, -1) << "ERROR: failed writing data log" << dendl;
   }
@@ -973,7 +973,7 @@ void RGWIndexCompletionManager::process()
 
       if (c->log_op) {
         // This null_yield can stay, for now, since we're in our own thread
-        r = add_datalog_entry(&dpp, store->svc.datalog_rados, bucket_info,
+        r = add_datalog_entry(&dpp, store->svc.datalog_manager, bucket_info,
 			      bs.shard_id, null_yield);
 	ldpp_dout(&dpp, 0) << "ERROR: " << __func__ << "(): write to datalog failed, obj=" << c->obj << " r=" << r << dendl;
 
@@ -5866,7 +5866,7 @@ int RGWRados::store_delete_bucket_info_flag(RGWBucketInfo& bucket_info, std::map
   if (r == 0) {
     for (int i = 0; i < shards_num; ++i) {
       ldpp_dout(dpp, 10) << "adding to data_log shard_id: " << i << " of gen:" << index_log.gen << dendl;
-      int ret = svc.datalog_rados->add_entry(dpp, bucket_info, index_log, i,
+      int ret = svc.datalog_manager->add_entry(dpp, bucket_info, index_log, i,
                                                   null_yield);
       if (ret < 0) {
         ldpp_dout(dpp, 1) << "WARNING: failed writing data log for bucket="
@@ -6638,7 +6638,7 @@ int RGWRados::Object::Delete::delete_obj(optional_yield y,
     }
 
     if (add_log) {
-      r = add_datalog_entry(dpp, store->svc.datalog_rados,
+      r = add_datalog_entry(dpp, store->svc.datalog_manager,
 			    target->get_bucket_info(), bs->shard_id, y);
       if (r < 0) {
         ldpp_dout(dpp, 0) << "failed to write datalog for object: r=" << r << dendl;
@@ -8106,7 +8106,7 @@ int RGWRados::Bucket::UpdateIndex::complete(const DoutPrefixProvider *dpp, int64
 
   ret = store->cls_obj_complete_add(*bs, obj, optag, poolid, epoch, ent, category, remove_objs, bilog_flags, zones_trace, add_log);
   if (add_log) {
-    ret = add_datalog_entry(dpp, store->svc.datalog_rados,
+    ret = add_datalog_entry(dpp, store->svc.datalog_manager,
 			    target->bucket_info, bs->shard_id, y);
   }
 
@@ -8137,7 +8137,7 @@ int RGWRados::Bucket::UpdateIndex::complete_del(const DoutPrefixProvider *dpp,
   ret = store->cls_obj_complete_del(*bs, optag, poolid, epoch, obj, removed_mtime, remove_objs, bilog_flags, zones_trace, add_log);
 
   if (add_log) {
-    ret = add_datalog_entry(dpp, store->svc.datalog_rados,
+    ret = add_datalog_entry(dpp, store->svc.datalog_manager,
 			    target->bucket_info, bs->shard_id, y);
   }
 
@@ -8168,7 +8168,7 @@ int RGWRados::Bucket::UpdateIndex::cancel(const DoutPrefixProvider *dpp,
      * for following the specific bucket shard log. Otherwise they end up staying behind, and users
      * have no way to tell that they're all caught up
      */
-    ret = add_datalog_entry(dpp, store->svc.datalog_rados,
+    ret = add_datalog_entry(dpp, store->svc.datalog_manager,
 			    target->bucket_info, bs->shard_id, y);
   }
 
@@ -9026,7 +9026,7 @@ int RGWRados::bucket_index_link_olh(const DoutPrefixProvider *dpp, RGWBucketInfo
   }
 
   if (log_data_change) {
-    r = add_datalog_entry(dpp, svc.datalog_rados, bucket_info, bs.shard_id, y);
+    r = add_datalog_entry(dpp, svc.datalog_manager, bucket_info, bs.shard_id, y);
   }
 
   return r;

@@ -881,7 +881,7 @@ static int commit_reshard(rgw::sal::RadosStore* store,
     // TODO: use a log layout to support types other than BucketLogType::InIndex
     for (uint32_t shard_id = 0; shard_id < rgw::num_shards(prev.current_index.layout.normal); ++shard_id) {
       // This null_yield can stay, for now, since we're in our own thread
-      ret = store->svc()->datalog_rados->add_entry(dpp, bucket_info, prev.logs.back(), shard_id,
+      ret = store->svc()->datalog_manager->add_entry(dpp, bucket_info, prev.logs.back(), shard_id,
 						   null_yield);
       if (ret < 0) {
         ldpp_dout(dpp, 1) << "WARNING: failed writing data log (bucket_info.bucket="
