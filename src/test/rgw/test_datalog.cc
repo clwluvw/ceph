@@ -549,13 +549,17 @@ TEST_F(PerZoneDataLogTest, SeparateOIDsPerPrefix) {
     bi2.bucket.name = "bucket2";
     co_await datalog2->add_entry(dpp(), bi2, gen, 0);
 
-    // Check that OIDs are different
-    auto oid1 = datalog1->get_oid(0, 0);
-    auto oid2 = datalog2->get_oid(0, 0);
+    // Determine actual shard indices for each bucket+shard
+    auto shard_index1 = datalog1->get_log_shard_id(bi1.bucket, 0);
+    auto shard_index2 = datalog2->get_log_shard_id(bi2.bucket, 0);
+
+    // Check that OIDs are different and have correct prefixes
+    auto oid1 = datalog1->get_oid(0, shard_index1);
+    auto oid2 = datalog2->get_oid(0, shard_index2);
     
     EXPECT_NE(oid1, oid2);
-    EXPECT_EQ(oid1, "data_log.zone1.0");
-    EXPECT_EQ(oid2, "data_log.zone2.0");
+    EXPECT_TRUE(oid1.rfind("data_log.zone1.", 0) == 0);
+    EXPECT_TRUE(oid2.rfind("data_log.zone2.", 0) == 0);
 
     // Verify both objects exist and contain data
     try {

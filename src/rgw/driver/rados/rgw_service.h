@@ -100,7 +100,7 @@ struct RGWServices_Def
   std::unique_ptr<RGWSI_SysObj_Core> sysobj_core;
   std::unique_ptr<RGWSI_SysObj_Cache> sysobj_cache;
   std::unique_ptr<RGWSI_User_RADOS> user_rados;
-  std::unique_ptr<RGWDataChangesLog> datalog_rados;
+  RGWDataChangesLog* datalog_rados{nullptr};  // Non-owning pointer to manager's legacy log
   std::unique_ptr<RGWDataChangesLogManager> datalog_manager;
   std::unique_ptr<RGWAsyncRadosProcessor> async_processor;
 

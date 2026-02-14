@@ -145,12 +145,12 @@ int RGWServices_Def::init(CephContext *cct,
       return r;
     }
 
-    // Set datalog_rados to point to the manager's legacy log (non-owning)
+    // Set datalog_rados to point to the manager's legacy log (non-owning pointer)
     // The manager owns the legacy log, we just keep a pointer for backward compatibility
-    datalog_rados.reset(datalog_manager->get_legacy_log());
+    datalog_rados = datalog_manager->get_legacy_log();
     
     // Now update bi_rados with both datalog pointers
-    bi_rados->svc.datalog_rados = datalog_rados.get();
+    bi_rados->svc.datalog_rados = datalog_rados;
     bi_rados->svc.datalog_manager = datalog_manager.get();
 
     r = mdlog->start(y, dpp);
@@ -245,12 +245,12 @@ void RGWServices_Def::shutdown()
     return;
   }
 
-  // Reset datalog_rados first since it's a non-owning pointer to manager's log
-  datalog_rados.reset();
-  // Stop datalog_manager which will handle stopping all logs
+  // Stop datalog_manager while its logs (including datalog_rados) are still alive
   if (datalog_manager) {
     datalog_manager->stop();
   }
+  // Now it is safe to reset datalog_rados (non-owning, just clear the pointer) and release the manager
+  datalog_rados = nullptr;
   datalog_manager.reset();
   user_rados->shutdown();
   sync_modules->shutdown();
