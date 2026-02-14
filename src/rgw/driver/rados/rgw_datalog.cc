@@ -1806,6 +1806,12 @@ int RGWDataChangesLogManager::init(const DoutPrefixProvider* dpp,
         cleanup_log->blocking_shutdown();
       }
       zone_logs.clear();
+      // Also shut down the legacy log that was started before per-zone logs
+      if (legacy_log) {
+        ldpp_dout(dpp, 10) << "cleaning up legacy datalog" << dendl;
+        legacy_log->blocking_shutdown();
+        legacy_log.reset();
+      }
       return r;
     }
     zone_logs[zone_id] = std::move(zone_log);
@@ -1898,16 +1904,17 @@ int RGWDataChangesLogManager::add_entry(
     int shard_id,
     optional_yield y) noexcept
 {
-  // Fan out to legacy log
-  int r = legacy_log->add_entry(dpp, bucket_info, gen, shard_id, y);
-  if (r < 0) {
-    return r;
+  // Fan out to legacy log - remember error but continue with zone logs
+  int legacy_err = legacy_log->add_entry(dpp, bucket_info, gen, shard_id, y);
+  if (legacy_err < 0) {
+    ldpp_dout(dpp, 1) << "WARNING: failed to add entry to legacy datalog: " 
+                      << cpp_strerror(-legacy_err) << dendl;
   }
 
-  // Fan out to all zone logs
+  // Fan out to all zone logs, continuing even if legacy failed
   int zone_err = 0;
   for (auto& [zone_id, zone_log] : zone_logs) {
-    r = zone_log->add_entry(dpp, bucket_info, gen, shard_id, y);
+    int r = zone_log->add_entry(dpp, bucket_info, gen, shard_id, y);
     if (r < 0) {
       ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
                         << zone_id.id << " datalog: " << cpp_strerror(-r) << dendl;
@@ -1918,7 +1925,11 @@ int RGWDataChangesLogManager::add_entry(
     }
   }
 
-  // Return error if any zone write failed
+  // Return legacy error if it failed, otherwise first zone error
+  // This maintains consistency with async versions where legacy error is prioritized
+  if (legacy_err < 0) {
+    return legacy_err;
+  }
   return zone_err;
 }
 
