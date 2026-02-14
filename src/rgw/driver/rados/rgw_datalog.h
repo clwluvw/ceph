@@ -586,3 +586,79 @@ public:
   // 1 on empty, 0 on non-empty, negative on error.
   virtual asio::awaitable<bool> is_empty(const DoutPrefixProvider *dpp) = 0;
 };
+
+/// Container managing both legacy and per-zone data change logs
+class RGWDataChangesLogManager {
+  std::unique_ptr<RGWDataChangesLog> legacy_log;
+  std::map<rgw_zone_id, std::unique_ptr<RGWDataChangesLog>> zone_logs;
+  rgw::sal::RadosStore* driver{nullptr};
+
+public:
+  RGWDataChangesLogManager() = default;
+  ~RGWDataChangesLogManager() = default;
+
+  /// Initialize legacy log and per-zone logs for target zones
+  int init(const DoutPrefixProvider* dpp,
+           rgw::sal::RadosStore* driver,
+           const RGWZone* zone,
+           const RGWZoneParams& zoneparams,
+           const std::map<rgw_zone_id, RGWRESTConn*>& target_zones,
+           bool background_tasks);
+
+  /// Add entry to both legacy and all per-zone logs (fan-out)
+  asio::awaitable<void> add_entry(const DoutPrefixProvider* dpp,
+                                  const RGWBucketInfo& bucket_info,
+                                  const rgw::bucket_log_layout_generation& gen,
+                                  int shard_id);
+  void add_entry(const DoutPrefixProvider* dpp,
+                 const RGWBucketInfo& bucket_info,
+                 const rgw::bucket_log_layout_generation& gen,
+                 int shard_id, asio::yield_context y);
+  int add_entry(const DoutPrefixProvider* dpp,
+                const RGWBucketInfo& bucket_info,
+                const rgw::bucket_log_layout_generation& gen,
+                int shard_id, optional_yield y) noexcept;
+
+  /// Access the legacy log (for backward compatibility)
+  RGWDataChangesLog* get_legacy_log() {
+    return legacy_log.get();
+  }
+
+  /// Access a zone-specific log, returns nullptr if zone not found
+  RGWDataChangesLog* get_zone_log(const rgw_zone_id& zone_id);
+
+  /// Get list of all zone IDs with logs
+  std::vector<rgw_zone_id> get_zone_ids() const;
+
+  /// List entries from a specific zone's log, or legacy if zone_id is empty
+  asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
+                             std::string, bool>>
+  list_entries(const DoutPrefixProvider* dpp,
+               const std::optional<rgw_zone_id>& zone_id,
+               int shard, int max_entries, std::string marker);
+
+  /// Trim entries from a specific zone's log
+  asio::awaitable<void> trim_entries(const DoutPrefixProvider* dpp,
+                                     const rgw_zone_id& zone_id,
+                                     int shard_id, std::string_view marker);
+
+  /// Get info from a specific zone's log
+  asio::awaitable<RGWDataChangesLogInfo> get_info(const DoutPrefixProvider* dpp,
+                                                   const rgw_zone_id& zone_id,
+                                                   int shard_id);
+
+  /// Read and clear modified shards from all per-zone logs
+  std::map<rgw_zone_id, bc::flat_map<int, bc::flat_set<rgw_data_notify_entry>>>
+  read_clear_modified_by_zone();
+
+  /// Forward observer to all logs
+  void set_observer(rgw::BucketChangeObserver* observer);
+
+  /// Forward bucket filter to all logs
+  void set_bucket_filter(
+    std::function<bool(const rgw_bucket& bucket, optional_yield y,
+                       const DoutPrefixProvider* dpp)>&& f);
+
+  /// Stop all logs
+  void stop();
+};
