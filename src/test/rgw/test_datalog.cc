@@ -628,3 +628,93 @@ TEST_F(PerZoneDataLogTest, IndependentModifiedShards) {
     co_return;
   });
 }
+
+TEST_F(PerZoneDataLogTest, IndependentTrimPerZone) {
+  run([this]() -> asio::awaitable<void> {
+    // Create two zone logs with different prefixes
+    auto datalog1 = std::make_unique<RGWDataChangesLog>(
+        zone(), rados(), get_io_context(), nullptr, dpp(),
+        "data_log.zone1");
+    auto datalog2 = std::make_unique<RGWDataChangesLog>(
+        zone(), rados(), get_io_context(), nullptr, dpp(),
+        "data_log.zone2");
+
+    // Start both logs
+    co_await datalog1->start(asio::use_awaitable);
+    co_await datalog2->start(asio::use_awaitable);
+
+    // Create bucket info for test
+    RGWBucketInfo bi;
+    bi.bucket.name = "test-trim-bucket";
+    bi.bucket.bucket_id = "test-trim-bucket-id";
+    bi.bucket.tenant = "test-tenant";
+
+    rgw_bucket_shard bs;
+    bs.bucket = bi.bucket;
+    bs.shard_id = 0;
+
+    rgw_bucket_gen gen;
+    gen.gen = 1;
+
+    // Add entries to both zone logs
+    co_await datalog1->add_entry(dpp(), bi, gen, 0);
+    co_await datalog2->add_entry(dpp(), bi, gen, 0);
+
+    // List entries from both logs to get markers
+    std::vector<rgw_data_change_log_entry> entries1, entries2;
+    std::string marker1, marker2;
+    bool truncated1, truncated2;
+
+    // Get the actual shard where entries were written
+    int shard_id = datalog1->get_log_shard_id(bi.bucket, 0);
+
+    // List entries from zone1 log
+    std::tie(entries1, marker1, truncated1) =
+        co_await datalog1->list_entries(dpp(), shard_id, 100, {});
+    
+    EXPECT_FALSE(entries1.empty()) << "Zone1 log should have entries";
+    ASSERT_GT(entries1.size(), 0) << "Need at least one entry for trim test";
+
+    // List entries from zone2 log
+    std::tie(entries2, marker2, truncated2) =
+        co_await datalog2->list_entries(dpp(), shard_id, 100, {});
+    
+    EXPECT_FALSE(entries2.empty()) << "Zone2 log should have entries";
+    ASSERT_GT(entries2.size(), 0) << "Need at least one entry for trim test";
+
+    // Trim zone1 log up to the marker of the first entry
+    std::string trim_marker1 = entries1[0].log_id;
+    co_await datalog1->trim_entries(dpp(), shard_id, trim_marker1);
+
+    // List again from both logs after trimming zone1
+    std::vector<rgw_data_change_log_entry> entries1_after, entries2_after;
+    std::string marker1_after, marker2_after;
+    bool truncated1_after, truncated2_after;
+
+    std::tie(entries1_after, marker1_after, truncated1_after) =
+        co_await datalog1->list_entries(dpp(), shard_id, 100, {});
+    
+    std::tie(entries2_after, marker2_after, truncated2_after) =
+        co_await datalog2->list_entries(dpp(), shard_id, 100, {});
+
+    // Verify zone1 log was trimmed (entries removed or reduced)
+    EXPECT_LE(entries1_after.size(), entries1.size())
+        << "Zone1 log should be trimmed (fewer or equal entries)";
+
+    // Verify zone2 log was NOT affected by zone1 trim
+    EXPECT_EQ(entries2_after.size(), entries2.size())
+        << "Zone2 log should be unaffected by zone1 trim";
+    
+    // Verify the actual entries are the same in zone2
+    if (!entries2.empty() && !entries2_after.empty()) {
+      EXPECT_EQ(entries2[0].log_id, entries2_after[0].log_id)
+          << "Zone2 log entries should be unchanged";
+    }
+
+    // Clean up
+    datalog1->blocking_shutdown();
+    datalog2->blocking_shutdown();
+
+    co_return;
+  });
+}

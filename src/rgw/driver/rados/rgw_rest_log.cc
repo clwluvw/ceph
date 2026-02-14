@@ -652,6 +652,26 @@ void RGWOp_BILog_Delete::execute(optional_yield y) {
   return;
 }
 
+// Helper function to resolve datalog based on zone-id parameter
+// Returns pair<RGWDataChangesLog*, int> where int is error code (0 = success, -ENOENT = zone not found)
+static std::pair<RGWDataChangesLog*, int> resolve_datalog(
+    const DoutPrefixProvider* dpp,
+    rgw::sal::RadosStore* store,
+    const std::string& zone_id_str)
+{
+  if (!zone_id_str.empty()) {
+    rgw_zone_id zone_id(zone_id_str);
+    auto* datalog = store->svc()->datalog_manager->get_zone_log(zone_id);
+    if (!datalog) {
+      ldpp_dout(dpp, 5) << "Zone log not found for zone-id " << zone_id_str << dendl;
+      return {nullptr, -ENOENT};
+    }
+    return {datalog, 0};
+  } else {
+    return {store->svc()->datalog_manager->get_legacy_log(), 0};
+  }
+}
+
 void RGWOp_DATALog_List::execute(optional_yield y) {
   string   shard = s->info.args.get("id");
   string   zone_id_str = s->info.args.get("zone-id");
@@ -693,17 +713,10 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   
   // Select zone-specific or legacy log based on zone-id parameter
-  RGWDataChangesLog* datalog = nullptr;
-  if (!zone_id_str.empty()) {
-    rgw_zone_id zone_id(zone_id_str);
-    datalog = store->svc()->datalog_manager->get_zone_log(zone_id);
-    if (!datalog) {
-      ldpp_dout(this, 5) << "Zone log not found for zone-id " << zone_id_str << dendl;
-      op_ret = -ENOENT;
-      return;
-    }
-  } else {
-    datalog = store->svc()->datalog_manager->get_legacy_log();
+  auto [datalog, ret] = resolve_datalog(this, store, zone_id_str);
+  if (ret < 0) {
+    op_ret = ret;
+    return;
   }
 
   op_ret = rgw::run_coro(
@@ -785,17 +798,10 @@ void RGWOp_DATALog_ShardInfo::execute(optional_yield y) {
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   
   // Select zone-specific or legacy log based on zone-id parameter
-  RGWDataChangesLog* datalog = nullptr;
-  if (!zone_id_str.empty()) {
-    rgw_zone_id zone_id(zone_id_str);
-    datalog = store->svc()->datalog_manager->get_zone_log(zone_id);
-    if (!datalog) {
-      ldpp_dout(this, 5) << "Zone log not found for zone-id " << zone_id_str << dendl;
-      op_ret = -ENOENT;
-      return;
-    }
-  } else {
-    datalog = store->svc()->datalog_manager->get_legacy_log();
+  auto [datalog, ret] = resolve_datalog(this, store, zone_id_str);
+  if (ret < 0) {
+    op_ret = ret;
+    return;
   }
 
   op_ret = rgw::run_coro(this, store->get_io_context(),
@@ -953,17 +959,10 @@ void RGWOp_DATALog_Delete::execute(optional_yield y) {
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   
   // Select zone-specific or legacy log based on zone-id parameter
-  RGWDataChangesLog* datalog = nullptr;
-  if (!zone_id_str.empty()) {
-    rgw_zone_id zone_id(zone_id_str);
-    datalog = store->svc()->datalog_manager->get_zone_log(zone_id);
-    if (!datalog) {
-      ldpp_dout(this, 5) << "Zone log not found for zone-id " << zone_id_str << dendl;
-      op_ret = -ENOENT;
-      return;
-    }
-  } else {
-    datalog = store->svc()->datalog_manager->get_legacy_log();
+  auto [datalog, ret] = resolve_datalog(this, store, zone_id_str);
+  if (ret < 0) {
+    op_ret = ret;
+    return;
   }
 
   op_ret = rgw::run_coro(
@@ -1227,6 +1226,11 @@ public:
 
 void RGWOp_DATALog_Status::execute(optional_yield y)
 {
+  // Note: RGWOp_DATALog_Status uses source-zone parameter for sync status,
+  // not zone-id for log selection. This is intentional - it queries sync status
+  // from a specific source zone, which is conceptually different from selecting
+  // which datalog to query. The zone-id pattern is used by List/Delete/ShardInfo
+  // to select a specific per-zone log, but Status queries sync state, not log content.
   const auto source_zone = s->info.args.get("source-zone");
   auto sync = driver->get_data_sync_manager(source_zone);
   if (sync == nullptr) {
