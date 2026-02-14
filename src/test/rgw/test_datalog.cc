@@ -469,3 +469,146 @@ CORO_TEST_F(DataLogBulky, BulkySemaphoresRecovery, DataLogBulky) {
   }
   co_return;
 }
+
+// Test per-zone datalog with custom prefixes
+class PerZoneDataLogTest : public CoroTest {
+private:
+  const std::string prefix_{std::string{"per-zone test framework "} +
+                            testing::UnitTest::GetInstance()->
+                            current_test_info()->name() +
+                            std::string{": "}};
+
+  std::optional<neorados::RADOS> rados_;
+  neorados::IOContext pool_;
+  const std::string pool_name_ = get_temp_pool_name(
+    testing::UnitTest::GetInstance()->current_test_info()->name());
+  std::unique_ptr<DoutPrefix> dpp_;
+
+  boost::asio::awaitable<uint64_t> create_pool() {
+    co_return co_await ::create_pool(rados(), pool_name(),
+                                     boost::asio::use_awaitable);
+  }
+
+  boost::asio::awaitable<void> clean_pool() {
+    co_await rados().delete_pool(pool().get_pool(),
+                                 boost::asio::use_awaitable);
+  }
+
+protected:
+  std::unique_ptr<RGWDataChangesLog> datalog1;
+  std::unique_ptr<RGWDataChangesLog> datalog2;
+
+  neorados::RADOS& rados() noexcept { return *rados_; }
+  const std::string& pool_name() const noexcept { return pool_name_; }
+  const neorados::IOContext& pool() const noexcept { return pool_; }
+  std::string_view prefix() const noexcept { return prefix_; }
+  const DoutPrefixProvider* dpp() const noexcept { return dpp_.get(); }
+
+public:
+  boost::asio::awaitable<void> CoSetUp() override {
+    rados_ = co_await neorados::RADOS::Builder{}
+      .build(asio_context, boost::asio::use_awaitable);
+    dpp_ = std::make_unique<DoutPrefix>(rados().cct(), 0, prefix().data());
+    pool_.set_pool(co_await create_pool());
+    
+    // Create two datalogs with different prefixes
+    datalog1 = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
+                                                    rados(), std::nullopt, 
+                                                    std::nullopt, "data_log.zone1");
+    co_await datalog1->start(dpp(), rgw_pool(pool_name()), false, false, false);
+    
+    datalog2 = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
+                                                    rados(), std::nullopt,
+                                                    std::nullopt, "data_log.zone2");
+    co_await datalog2->start(dpp(), rgw_pool(pool_name()), false, false, false);
+    co_return;
+  }
+
+  ~PerZoneDataLogTest() override = default;
+
+  boost::asio::awaitable<void> CoTearDown() override {
+    co_await datalog1->async_shutdown();
+    co_await datalog2->async_shutdown();
+    co_await clean_pool();
+    co_return;
+  }
+};
+
+TEST_F(PerZoneDataLogTest, SeparateOIDsPerPrefix) {
+  // Verify that logs with different prefixes create different RADOS objects
+  CoRun([this]() -> asio::awaitable<void> {
+    // Add entry to first log
+    RGWBucketInfo bi1;
+    bi1.bucket.name = "bucket1";
+    rgw::bucket_log_layout_generation gen;
+    gen.gen = 0;
+    co_await datalog1->add_entry(dpp(), bi1, gen, 0);
+
+    // Add entry to second log
+    RGWBucketInfo bi2;
+    bi2.bucket.name = "bucket2";
+    co_await datalog2->add_entry(dpp(), bi2, gen, 0);
+
+    // Check that OIDs are different
+    auto oid1 = datalog1->get_oid(0, 0);
+    auto oid2 = datalog2->get_oid(0, 0);
+    
+    EXPECT_NE(oid1, oid2);
+    EXPECT_EQ(oid1, "data_log.zone1.0");
+    EXPECT_EQ(oid2, "data_log.zone2.0");
+
+    // Verify both objects exist and contain data
+    try {
+      neorados::ReadOp read_op1;
+      co_await rados().execute(oid1, pool(), std::move(read_op1), nullptr,
+                              asio::use_awaitable);
+    } catch (const sys::system_error& e) {
+      FAIL() << "Zone1 log object doesn't exist: " << e.what();
+    }
+
+    try {
+      neorados::ReadOp read_op2;
+      co_await rados().execute(oid2, pool(), std::move(read_op2), nullptr,
+                              asio::use_awaitable);
+    } catch (const sys::system_error& e) {
+      FAIL() << "Zone2 log object doesn't exist: " << e.what();
+    }
+
+    co_return;
+  });
+}
+
+TEST_F(PerZoneDataLogTest, IndependentModifiedShards) {
+  // Verify that each log maintains independent modified_shards tracking
+  CoRun([this]() -> asio::awaitable<void> {
+    // Add entries to both logs
+    RGWBucketInfo bi;
+    bi.bucket.name = "test-bucket";
+    rgw::bucket_log_layout_generation gen;
+    gen.gen = 0;
+    
+    co_await datalog1->add_entry(dpp(), bi, gen, 0);
+    co_await datalog2->add_entry(dpp(), bi, gen, 1);
+
+    // Read modified shards from each log
+    auto modified1 = datalog1->read_clear_modified();
+    auto modified2 = datalog2->read_clear_modified();
+
+    // Verify log1 has shard 0 modified
+    EXPECT_EQ(modified1.size(), 1);
+    EXPECT_TRUE(modified1.contains(0));
+    
+    // Verify log2 has shard 1 modified
+    EXPECT_EQ(modified2.size(), 1);
+    EXPECT_TRUE(modified2.contains(1));
+
+    // Verify reading cleared the modified shards
+    auto modified1_again = datalog1->read_clear_modified();
+    auto modified2_again = datalog2->read_clear_modified();
+    
+    EXPECT_TRUE(modified1_again.empty());
+    EXPECT_TRUE(modified2_again.empty());
+
+    co_return;
+  });
+}
