@@ -451,26 +451,47 @@ public:
 
 int RGWDataNotifier::process(const DoutPrefixProvider *dpp)
 {
-  auto data_log = store->svc.datalog_rados;
-  if (!data_log) {
+  auto datalog_manager = store->svc.datalog_manager;
+  if (!datalog_manager) {
     return 0;
   }
 
-  auto shards = data_log->read_clear_modified();
+  // Get per-zone modified shards
+  auto zone_shards = datalog_manager->read_clear_modified_by_zone();
 
-  if (shards.empty()) {
+  if (zone_shards.empty()) {
     return 0;
   }
 
-  for (const auto& [shard_id, entries] : shards) {
-    bc::flat_set<rgw_data_notify_entry>::iterator it;
-    for (const auto& entry : entries) {
-      ldpp_dout(dpp, 20) << __func__ << "(): notifying datalog change, shard_id="
-        << shard_id << ":" << entry.gen << ":" << entry.key << dendl;
+  // Send each zone only its own modified entries
+  auto& zone_conn_map = store->svc.zone->get_zone_data_notify_to_map();
+  for (const auto& [zone_id, shards] : zone_shards) {
+    auto conn_it = zone_conn_map.find(zone_id);
+    if (conn_it == zone_conn_map.end()) {
+      ldpp_dout(dpp, 10) << __func__ << "(): no connection for zone " 
+                         << zone_id.id << ", skipping notification" << dendl;
+      continue;
     }
-  }
 
-  notify_mgr.notify_all(dpp, store->svc.zone->get_zone_data_notify_to_map(), shards);
+    if (shards.empty()) {
+      continue;
+    }
+
+    for (const auto& [shard_id, entries] : shards) {
+      for (const auto& entry : entries) {
+        ldpp_dout(dpp, 20) << __func__ << "(): notifying zone " << zone_id.id
+          << " datalog change, shard_id=" << shard_id << ":" << entry.gen 
+          << ":" << entry.key << dendl;
+      }
+    }
+
+    // Create a connection map with just this zone
+    std::map<rgw_zone_id, RGWRESTConn*> single_zone_map;
+    single_zone_map[zone_id] = conn_it->second;
+
+    // Notify this zone with its specific modified shards
+    notify_mgr.notify_all(dpp, single_zone_map, shards);
+  }
 
   return 0;
 }
