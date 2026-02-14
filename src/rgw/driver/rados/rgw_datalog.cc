@@ -1790,14 +1790,16 @@ int RGWDataChangesLogManager::init(const DoutPrefixProvider* dpp,
 
   // Create and start per-zone logs
   for (const auto& [zone_id, conn] : target_zones) {
+    (void)conn; // Suppress unused variable warning
     std::string zone_prefix = fmt::format("data_log.{}", zone_id.id);
     auto zone_log = std::make_unique<RGWDataChangesLog>(driver, zone_prefix);
     r = zone_log->start(dpp, zone, zoneparams, background_tasks);
     if (r < 0) {
       ldpp_dout(dpp, 0) << "ERROR: failed to start datalog for zone " 
                         << zone_id.id << " (" << cpp_strerror(-r) << ")" << dendl;
-      // Continue with other zones even if one fails
-      continue;
+      // Failing to start a per-zone log is fatal because notifications and trimming
+      // depend on all target zones having functional logs
+      return r;
     }
     zone_logs[zone_id] = std::move(zone_log);
     ldpp_dout(dpp, 10) << "started per-zone datalog for zone " << zone_id.id 
@@ -1955,7 +1957,10 @@ void RGWDataChangesLogManager::set_bucket_filter(
                        const DoutPrefixProvider* dpp)>&& f)
 {
   // Create a shared_ptr to the filter function so we can share it across all logs
-  auto filter = std::make_shared<decltype(f)>(std::move(f));
+  auto filter = std::make_shared<
+      std::function<bool(const rgw_bucket&, optional_yield,
+                         const DoutPrefixProvider*)>
+    >(std::move(f));
   
   if (legacy_log) {
     legacy_log->set_bucket_filter([filter](const rgw_bucket& bucket, 

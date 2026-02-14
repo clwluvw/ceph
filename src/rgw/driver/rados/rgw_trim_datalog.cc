@@ -267,11 +267,20 @@ int PerZoneDataLogTrimCR::operate(const DoutPrefixProvider *dpp)
     ldpp_dout(dpp, 10) << "trimming log shards for zone " << target_zone_id.id << dendl;
     set_status("trimming zone log shards");
     yield {
-      // determine the marker for each shard based on this zone's status
-      auto m = min_shard_markers.begin();
-      for (auto& shard : zone_status.sync_markers) {
-        const auto& stable = get_stable_marker(shard.second);
-        *m++ = stable;
+      // Initialize all shard markers to max_marker for missing shards
+      std::fill(min_shard_markers.begin(), min_shard_markers.end(), 
+                std::string(zone_log->max_marker()));
+      
+      // Populate markers by shard index, guarding against out-of-range shard ids
+      for (const auto& shard_entry : zone_status.sync_markers) {
+        const auto shard_id = shard_entry.first;
+        if (shard_id < 0 || shard_id >= num_shards) {
+          ldpp_dout(dpp, 1) << "WARNING: shard_id " << shard_id 
+                            << " out of range [0, " << num_shards << ")" << dendl;
+          continue;
+        }
+        const auto& stable = get_stable_marker(shard_entry.second);
+        min_shard_markers[shard_id] = stable;
       }
 
       for (int i = 0; i < num_shards; i++) {

@@ -560,6 +560,10 @@ TEST_F(PerZoneDataLogTest, SeparateOIDsPerPrefix) {
     // Verify both objects exist and contain data
     try {
       neorados::ReadOp read_op1;
+      uint64_t size1;
+      time_t mtime1;
+      int prval1;
+      read_op1.stat(&size1, &mtime1, &prval1);
       co_await rados().execute(oid1, pool(), std::move(read_op1), nullptr,
                               asio::use_awaitable);
     } catch (const sys::system_error& e) {
@@ -568,6 +572,10 @@ TEST_F(PerZoneDataLogTest, SeparateOIDsPerPrefix) {
 
     try {
       neorados::ReadOp read_op2;
+      uint64_t size2;
+      time_t mtime2;
+      int prval2;
+      read_op2.stat(&size2, &mtime2, &prval2);
       co_await rados().execute(oid2, pool(), std::move(read_op2), nullptr,
                               asio::use_awaitable);
     } catch (const sys::system_error& e) {

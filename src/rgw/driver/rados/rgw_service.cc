@@ -146,7 +146,11 @@ int RGWServices_Def::init(CephContext *cct,
     }
 
     // Point datalog_rados to the legacy log for backward compatibility
-    datalog_rados = datalog_manager->get_legacy_log();
+    // Note: datalog_rados is a unique_ptr but we're setting it to a raw pointer
+    // that's owned by datalog_manager. We need to release ownership from the unique_ptr
+    // since the manager owns it.
+    datalog_rados.release();
+    datalog_rados.reset(datalog_manager->get_legacy_log());
 
     r = mdlog->start(y, dpp);
     if (r < 0) {

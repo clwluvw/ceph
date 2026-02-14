@@ -3122,7 +3122,7 @@ public:
                                           RGWSI_Zone* svc_zone,
                                           RGWSI_Bucket* svc_bucket,
                                           RGWSI_BucketIndex* svc_bi,
-                                          RGWDataChangesLog *svc_datalog)
+                                          RGWDataChangesLogManager *svc_datalog)
       -> std::unique_ptr<RGWMetadataHandler> override {
     return create_archive_bucket_instance_metadata_handler(
         driver, svc_zone, svc_bucket, svc_bi, svc_datalog);
