@@ -1791,8 +1791,7 @@ int RGWDataChangesLogManager::init(const DoutPrefixProvider* dpp,
   // Determine if we're the master zone of our zonegroup
   const auto& zonegroup = driver->get_zone()->get_zonegroup();
   const auto& our_zone_id = driver->get_zone()->get_zone_params().get_id();
-  bool we_are_master_zone = (zonegroup.is_master_zonegroup() && 
-                              zonegroup.master_zone.id == our_zone_id);
+  bool we_are_master_zone = (zonegroup.master_zone.id == our_zone_id);
   
   ldpp_dout(dpp, 10) << "our zone " << our_zone_id 
                      << (we_are_master_zone ? " is" : " is not") 
@@ -1859,12 +1858,12 @@ asio::awaitable<void> RGWDataChangesLogManager::add_entry(
   size_t total_writes = 1 + zone_logs.size();
   auto group = async::spawn_group{ex, total_writes};
   
-  // Track errors from each write
+  // Track errors from each write using indexed writes to avoid data races
   struct WriteResult {
     std::optional<rgw_zone_id> zone_id; // nullopt for legacy log
     std::exception_ptr error;
   };
-  auto results = std::make_shared<std::vector<WriteResult>>();
+  auto results = std::make_shared<std::vector<WriteResult>>(total_writes);
   
   // Spawn legacy log write
   asio::co_spawn(ex, 
@@ -1872,24 +1871,26 @@ asio::awaitable<void> RGWDataChangesLogManager::add_entry(
       try {
         co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
       } catch (...) {
-        results->push_back(WriteResult{std::nullopt, std::current_exception()});
+        (*results)[0] = WriteResult{std::nullopt, std::current_exception()};
       }
     }(),
     group);
   
   // Spawn per-zone log writes in parallel
+  size_t idx = 1;
   for (auto& [zone_id, zone_log] : zone_logs) {
     asio::co_spawn(ex,
-      [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results]() -> asio::awaitable<void> {
+      [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
         try {
           co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
         } catch (...) {
           ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
                             << zone_id.id << " datalog" << dendl;
-          results->push_back(WriteResult{zone_id, std::current_exception()});
+          (*results)[idx] = WriteResult{zone_id, std::current_exception()};
         }
       }(),
       group);
+    ++idx;
   }
   
   // Wait for all writes to complete
@@ -1930,16 +1931,16 @@ void RGWDataChangesLogManager::add_entry(
   // Parallelize fan-out writes using spawn
   auto ex = y.get_executor();
   
-  // Track errors from each write
+  // Calculate total number of writes
+  size_t total_writes = 1 + zone_logs.size();
+  auto group = async::spawn_group{ex, total_writes};
+  
+  // Track errors from each write using indexed writes to avoid data races
   struct WriteResult {
     std::optional<rgw_zone_id> zone_id; // nullopt for legacy log
     std::exception_ptr error;
   };
-  auto results = std::make_shared<std::vector<WriteResult>>();
-  
-  // Calculate total number of writes
-  size_t total_writes = 1 + zone_logs.size();
-  auto group = async::spawn_group{ex, total_writes};
+  auto results = std::make_shared<std::vector<WriteResult>>(total_writes);
   
   // Spawn legacy log write
   asio::co_spawn(ex,
@@ -1947,24 +1948,26 @@ void RGWDataChangesLogManager::add_entry(
       try {
         co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
       } catch (...) {
-        results->push_back(WriteResult{std::nullopt, std::current_exception()});
+        (*results)[0] = WriteResult{std::nullopt, std::current_exception()};
       }
     }(),
     group);
   
   // Spawn per-zone log writes in parallel
+  size_t idx = 1;
   for (auto& [zone_id, zone_log] : zone_logs) {
     asio::co_spawn(ex,
-      [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results]() -> asio::awaitable<void> {
+      [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
         try {
           co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
         } catch (...) {
           ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
                             << zone_id.id << " datalog" << dendl;
-          results->push_back(WriteResult{zone_id, std::current_exception()});
+          (*results)[idx] = WriteResult{zone_id, std::current_exception()};
         }
       }(),
       group);
+    ++idx;
   }
   
   // Wait for all writes to complete
@@ -2011,16 +2014,16 @@ int RGWDataChangesLogManager::add_entry(
     try {
       auto ex = y->get_executor();
       
-      // Track errors from each write
+      // Calculate total number of writes
+      size_t total_writes = 1 + zone_logs.size();
+      auto group = async::spawn_group{ex, total_writes};
+      
+      // Track errors from each write using indexed writes to avoid data races
       struct WriteResult {
         std::optional<rgw_zone_id> zone_id; // nullopt for legacy log
         int error_code;
       };
-      auto results = std::make_shared<std::vector<WriteResult>>();
-      
-      // Calculate total number of writes
-      size_t total_writes = 1 + zone_logs.size();
-      auto group = async::spawn_group{ex, total_writes};
+      auto results = std::make_shared<std::vector<WriteResult>>(total_writes);
       
       // Spawn legacy log write
       asio::co_spawn(ex,
@@ -2029,25 +2032,27 @@ int RGWDataChangesLogManager::add_entry(
           if (r < 0) {
             ldpp_dout(dpp, 1) << "WARNING: failed to add entry to legacy datalog: " 
                               << cpp_strerror(-r) << dendl;
-            results->push_back(WriteResult{std::nullopt, r});
+            (*results)[0] = WriteResult{std::nullopt, r};
           }
           co_return;
         }(),
         group);
       
       // Spawn per-zone log writes in parallel
+      size_t idx = 1;
       for (auto& [zone_id, zone_log] : zone_logs) {
         asio::co_spawn(ex,
-          [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results]() -> asio::awaitable<void> {
+          [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
             int r = zone_log->add_entry(dpp, bucket_info, gen, shard_id, null_yield);
             if (r < 0) {
               ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
                                 << zone_id.id << " datalog: " << cpp_strerror(-r) << dendl;
-              results->push_back(WriteResult{zone_id, r});
+              (*results)[idx] = WriteResult{zone_id, r};
             }
             co_return;
           }(),
           group);
+        ++idx;
       }
       
       // Wait for all writes to complete
@@ -2180,6 +2185,11 @@ RGWDataChangesLogManager::read_clear_modified_by_zone()
     if (!modified.empty()) {
       result.emplace(zone_id, std::move(modified));
     }
+  }
+  // Also clear the legacy log's modified shards to prevent unbounded growth
+  // even though we're not using them for per-zone notifications
+  if (legacy_log) {
+    legacy_log->read_clear_modified();
   }
   return result;
 }

@@ -380,7 +380,7 @@ class RGWDataChangesLog {
   const int num_shards;
   std::string get_prefix() { return "data_log"; }
   std::string metadata_log_oid() {
-    return get_prefix() + "generations_metadata";
+    return prefix + "generations_metadata";
   }
   std::string prefix;
 
