@@ -593,11 +593,15 @@ TEST_F(PerZoneDataLogTest, SeparateOIDsPerPrefix) {
 TEST_F(PerZoneDataLogTest, IndependentModifiedShards) {
   // Verify that each log maintains independent modified_shards tracking
   CoRun([this]() -> asio::awaitable<void> {
-    // Add entries to both logs
+    // Add entries to both logs with different shard IDs
     RGWBucketInfo bi;
     bi.bucket.name = "test-bucket";
     rgw::bucket_log_layout_generation gen;
     gen.gen = 0;
+    
+    // Compute expected shard indices
+    int expected_shard1 = datalog1->get_log_shard_id(bi.bucket, 0);
+    int expected_shard2 = datalog2->get_log_shard_id(bi.bucket, 1);
     
     co_await datalog1->add_entry(dpp(), bi, gen, 0);
     co_await datalog2->add_entry(dpp(), bi, gen, 1);
@@ -606,13 +610,13 @@ TEST_F(PerZoneDataLogTest, IndependentModifiedShards) {
     auto modified1 = datalog1->read_clear_modified();
     auto modified2 = datalog2->read_clear_modified();
 
-    // Verify log1 has shard 0 modified
+    // Verify log1 has the expected shard modified
     EXPECT_EQ(modified1.size(), 1);
-    EXPECT_TRUE(modified1.contains(0));
+    EXPECT_TRUE(modified1.contains(expected_shard1));
     
-    // Verify log2 has shard 1 modified
+    // Verify log2 has the expected shard modified
     EXPECT_EQ(modified2.size(), 1);
-    EXPECT_TRUE(modified2.contains(1));
+    EXPECT_TRUE(modified2.contains(expected_shard2));
 
     // Verify reading cleared the modified shards
     auto modified1_again = datalog1->read_clear_modified();

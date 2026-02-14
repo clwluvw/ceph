@@ -1799,6 +1799,13 @@ int RGWDataChangesLogManager::init(const DoutPrefixProvider* dpp,
                         << zone_id.id << " (" << cpp_strerror(-r) << ")" << dendl;
       // Failing to start a per-zone log is fatal because notifications and trimming
       // depend on all target zones having functional logs
+      // Clean up any previously started zone logs before returning error
+      for (auto& [cleanup_zone_id, cleanup_log] : zone_logs) {
+        ldpp_dout(dpp, 10) << "cleaning up started datalog for zone " 
+                          << cleanup_zone_id.id << dendl;
+        cleanup_log->blocking_shutdown();
+      }
+      zone_logs.clear();
       return r;
     }
     zone_logs[zone_id] = std::move(zone_log);
@@ -1816,11 +1823,33 @@ asio::awaitable<void> RGWDataChangesLogManager::add_entry(
     int shard_id)
 {
   // Fan out to legacy log
-  co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
+  std::exception_ptr legacy_error;
+  try {
+    co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
+  } catch (...) {
+    legacy_error = std::current_exception();
+  }
 
-  // Fan out to all zone logs
+  // Fan out to all zone logs, collecting errors
+  std::vector<std::pair<rgw_zone_id, std::exception_ptr>> zone_errors;
   for (auto& [zone_id, zone_log] : zone_logs) {
-    co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
+    try {
+      co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
+    } catch (...) {
+      ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
+                        << zone_id.id << " datalog" << dendl;
+      zone_errors.emplace_back(zone_id, std::current_exception());
+    }
+  }
+
+  // If legacy log failed, rethrow that error (most critical)
+  if (legacy_error) {
+    std::rethrow_exception(legacy_error);
+  }
+
+  // If any zone log failed, throw the first zone error
+  if (!zone_errors.empty()) {
+    std::rethrow_exception(zone_errors[0].second);
   }
 }
 
@@ -1832,11 +1861,33 @@ void RGWDataChangesLogManager::add_entry(
     asio::yield_context y)
 {
   // Fan out to legacy log
-  legacy_log->add_entry(dpp, bucket_info, gen, shard_id, y);
+  std::exception_ptr legacy_error;
+  try {
+    legacy_log->add_entry(dpp, bucket_info, gen, shard_id, y);
+  } catch (...) {
+    legacy_error = std::current_exception();
+  }
 
-  // Fan out to all zone logs
+  // Fan out to all zone logs, collecting errors
+  std::vector<std::pair<rgw_zone_id, std::exception_ptr>> zone_errors;
   for (auto& [zone_id, zone_log] : zone_logs) {
-    zone_log->add_entry(dpp, bucket_info, gen, shard_id, y);
+    try {
+      zone_log->add_entry(dpp, bucket_info, gen, shard_id, y);
+    } catch (...) {
+      ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
+                        << zone_id.id << " datalog" << dendl;
+      zone_errors.emplace_back(zone_id, std::current_exception());
+    }
+  }
+
+  // If legacy log failed, rethrow that error (most critical)
+  if (legacy_error) {
+    std::rethrow_exception(legacy_error);
+  }
+
+  // If any zone log failed, throw the first zone error
+  if (!zone_errors.empty()) {
+    std::rethrow_exception(zone_errors[0].second);
   }
 }
 

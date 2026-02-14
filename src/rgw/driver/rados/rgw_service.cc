@@ -298,7 +298,7 @@ int RGWServices::do_init(CephContext *_cct, rgw::sal::RadosStore* driver, bool h
   cls = _svc.cls.get();
   config_key_rados = _svc.config_key_rados.get();
   config_key = config_key_rados;
-  datalog_rados = _svc.datalog_rados.get();
+  datalog_rados = _svc.datalog_rados;  // datalog_rados is already a raw pointer
   datalog_manager = _svc.datalog_manager.get();
   mdlog = _svc.mdlog.get();
   zone = _svc.zone.get();
