@@ -630,19 +630,9 @@ TEST_F(PerZoneDataLogTest, IndependentModifiedShards) {
 }
 
 TEST_F(PerZoneDataLogTest, IndependentTrimPerZone) {
-  run([this]() -> asio::awaitable<void> {
-    // Create two zone logs with different prefixes
-    auto datalog1 = std::make_unique<RGWDataChangesLog>(
-        zone(), rados(), get_io_context(), nullptr, dpp(),
-        "data_log.zone1");
-    auto datalog2 = std::make_unique<RGWDataChangesLog>(
-        zone(), rados(), get_io_context(), nullptr, dpp(),
-        "data_log.zone2");
-
-    // Start both logs
-    co_await datalog1->start(asio::use_awaitable);
-    co_await datalog2->start(asio::use_awaitable);
-
+  // Verify that trimming one zone's log doesn't affect another zone's log
+  CoRun([this]() -> asio::awaitable<void> {
+    // Use the preconfigured per-zone logs from the test fixture
     // Create bucket info for test
     RGWBucketInfo bi;
     bi.bucket.name = "test-trim-bucket";
@@ -653,7 +643,7 @@ TEST_F(PerZoneDataLogTest, IndependentTrimPerZone) {
     bs.bucket = bi.bucket;
     bs.shard_id = 0;
 
-    rgw_bucket_gen gen;
+    rgw::bucket_log_layout_generation gen;
     gen.gen = 1;
 
     // Add entries to both zone logs
