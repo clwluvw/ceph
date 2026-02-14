@@ -62,7 +62,7 @@ int RGWServices_Def::init(CephContext *cct,
   bilog_rados = std::make_unique<RGWSI_BILog_RADOS>(cct);
   cls = std::make_unique<RGWSI_Cls>(cct);
   config_key_rados = std::make_unique<RGWSI_ConfigKey_RADOS>(cct);
-  datalog_rados = std::make_unique<RGWDataChangesLog>(driver);
+  // Note: datalog_rados will be set to point to manager's legacy log after manager init
   datalog_manager = std::make_unique<RGWDataChangesLogManager>();
   mdlog = std::make_unique<RGWSI_MDLog>(cct, run_sync, cfgstore);
   if (have_cache) {
@@ -84,7 +84,7 @@ int RGWServices_Def::init(CephContext *cct,
 
   async_processor->start();
   bi_rados->init(zone.get(), driver->getRados()->get_rados_handle(),
-		 bilog_rados.get(), datalog_rados.get());
+		 bilog_rados.get(), nullptr, nullptr);  // Pass nullptr, will be set after manager init
   bilog_rados->init(bi_rados.get());
   bucket_sobj->init(zone.get(), sysobj.get(), sysobj_cache.get(),
                     bi_rados.get(), mdlog.get(),
@@ -145,12 +145,13 @@ int RGWServices_Def::init(CephContext *cct,
       return r;
     }
 
-    // Point datalog_rados to the legacy log for backward compatibility
-    // Note: datalog_rados is a unique_ptr but we're setting it to a raw pointer
-    // that's owned by datalog_manager. We need to release ownership from the unique_ptr
-    // since the manager owns it.
-    datalog_rados.release();
+    // Set datalog_rados to point to the manager's legacy log (non-owning)
+    // The manager owns the legacy log, we just keep a pointer for backward compatibility
     datalog_rados.reset(datalog_manager->get_legacy_log());
+    
+    // Now update bi_rados with both datalog pointers
+    bi_rados->svc.datalog_rados = datalog_rados.get();
+    bi_rados->svc.datalog_manager = datalog_manager.get();
 
     r = mdlog->start(y, dpp);
     if (r < 0) {
@@ -244,12 +245,13 @@ void RGWServices_Def::shutdown()
     return;
   }
 
+  // Reset datalog_rados first since it's a non-owning pointer to manager's log
+  datalog_rados.reset();
   // Stop datalog_manager which will handle stopping all logs
   if (datalog_manager) {
     datalog_manager->stop();
   }
   datalog_manager.reset();
-  datalog_rados.reset();
   user_rados->shutdown();
   sync_modules->shutdown();
   if (notify) {

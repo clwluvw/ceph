@@ -1854,16 +1854,21 @@ int RGWDataChangesLogManager::add_entry(
   }
 
   // Fan out to all zone logs
+  int zone_err = 0;
   for (auto& [zone_id, zone_log] : zone_logs) {
     r = zone_log->add_entry(dpp, bucket_info, gen, shard_id, y);
     if (r < 0) {
       ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
                         << zone_id.id << " datalog: " << cpp_strerror(-r) << dendl;
-      // Continue with other zones even if one fails
+      // Remember first error but continue with other zones
+      if (zone_err == 0) {
+        zone_err = r;
+      }
     }
   }
 
-  return 0;
+  // Return error if any zone write failed
+  return zone_err;
 }
 
 RGWDataChangesLog* RGWDataChangesLogManager::get_zone_log(
@@ -1937,7 +1942,11 @@ RGWDataChangesLogManager::read_clear_modified_by_zone()
 {
   std::map<rgw_zone_id, bc::flat_map<int, bc::flat_set<rgw_data_notify_entry>>> result;
   for (auto& [zone_id, zone_log] : zone_logs) {
-    result[zone_id] = zone_log->read_clear_modified();
+    auto modified = zone_log->read_clear_modified();
+    // Only include zones with non-empty modified sets
+    if (!modified.empty()) {
+      result.emplace(zone_id, std::move(modified));
+    }
   }
   return result;
 }

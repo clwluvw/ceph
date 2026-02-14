@@ -78,6 +78,7 @@ public:
     RGWSI_Zone *zone{nullptr};
     RGWSI_BILog_RADOS *bilog{nullptr};
     RGWDataChangesLog *datalog_rados{nullptr};
+    RGWDataChangesLogManager *datalog_manager{nullptr};
   } svc;
 
   RGWSI_BucketIndex_RADOS(CephContext *cct);
@@ -85,7 +86,8 @@ public:
   void init(RGWSI_Zone *zone_svc,
             librados::Rados* rados_,
             RGWSI_BILog_RADOS *bilog_svc,
-            RGWDataChangesLog *datalog_rados_svc);
+            RGWDataChangesLog *datalog_rados_svc,
+            RGWDataChangesLogManager *datalog_manager_svc);
 
   static int shards_max() {
     return RGW_SHARDS_PRIME_1;

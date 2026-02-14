@@ -37,6 +37,7 @@ class RGWUserCtl;
 class RGWBucketCtl;
 class RGWZone;
 struct RGWZoneParams;
+class RGWDataChangesLogManager;
 
 // this is used as a filter to RGWRados::cls_bucket_list_ordered; it
 // conforms to the type RGWBucketListNameFilter

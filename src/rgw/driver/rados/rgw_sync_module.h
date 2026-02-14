@@ -49,6 +49,7 @@ class RGWSI_BucketIndex;
 class RGWSI_Zone;
 class RGWBucketCtl;
 class RGWDataChangesLog;
+class RGWDataChangesLogManager;
 
 class RGWSyncModuleInstance {
 public:
