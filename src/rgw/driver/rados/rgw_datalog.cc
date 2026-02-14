@@ -358,21 +358,23 @@ public:
   }
 };
 
-RGWDataChangesLog::RGWDataChangesLog(rgw::sal::RadosStore* driver)
+RGWDataChangesLog::RGWDataChangesLog(rgw::sal::RadosStore* driver,
+				     std::optional<std::string> prefix)
   : cct(driver->ctx()), rados(driver->get_neorados()),
     executor(driver->get_io_context().get_executor()),
     num_shards(cct->_conf->rgw_data_log_num_shards),
-    prefix(get_prefix()),
+    prefix(prefix ? *prefix : get_prefix()),
     changes(cct->_conf->rgw_data_log_changes_size) {}
 
 RGWDataChangesLog::RGWDataChangesLog(CephContext *cct, bool log_data,
                                      neorados::RADOS rados,
                                      std::optional<int> num_shards,
-                                     std::optional<uint64_t> sem_max_keys)
+                                     std::optional<uint64_t> sem_max_keys,
+				     std::optional<std::string> prefix)
   : cct(cct), rados(rados), log_data(log_data), executor(rados.get_executor()), 
       num_shards(num_shards ? *num_shards :
 		 cct->_conf->rgw_data_log_num_shards),
-      prefix(get_prefix()), changes(cct->_conf->rgw_data_log_changes_size),
+      prefix(prefix ? *prefix : get_prefix()), changes(cct->_conf->rgw_data_log_changes_size),
       sem_max_keys(sem_max_keys ? *sem_max_keys : ss::max_keys) {}
 
 

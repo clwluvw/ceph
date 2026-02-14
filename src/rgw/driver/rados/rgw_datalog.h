@@ -433,12 +433,14 @@ class RGWDataChangesLog {
 
 public:
 
-  RGWDataChangesLog(rgw::sal::RadosStore* driver);
+  RGWDataChangesLog(rgw::sal::RadosStore* driver,
+		    std::optional<std::string> prefix = std::nullopt);
   // For testing.
   RGWDataChangesLog(CephContext* cct, bool log_data,
 		    neorados::RADOS rados,
 		    std::optional<int> num_shards = std::nullopt,
-		    std::optional<uint64_t> sem_max_keys = std::nullopt);
+		    std::optional<uint64_t> sem_max_keys = std::nullopt,
+		    std::optional<std::string> prefix = std::nullopt);
   ~RGWDataChangesLog();
 
   asio::awaitable<void> start(const DoutPrefixProvider* dpp,
