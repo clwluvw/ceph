@@ -762,29 +762,34 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
   auto ut = real_clock::now();
   auto be = bes->head();
 
+  // For each entry, commit it for all zones
   for (const auto& [bs, gen] : entries) {
     auto index = choose_oid(bs);
 
-    rgw_data_change change;
-    buffer::list bl;
-    change.entity_type = ENTITY_TYPE_BUCKET;
-    change.key = bs.get_key();
-    change.timestamp = ut;
-    change.gen = gen;
-    encode(change, bl);
+    // Commit entry for each zone in the zonegroup
+    for (const auto& [zone_id, _] : zone_shards) {
+      rgw_data_change change;
+      buffer::list bl;
+      change.entity_type = ENTITY_TYPE_BUCKET;
+      change.key = bs.get_key();
+      change.timestamp = ut;
+      change.gen = gen;
+      change.zone_id = zone_id;
+      encode(change, bl);
 
-    m[index].first.push_back({bs, gen});
-    be->prepare(ut, change.key, std::move(bl), m[index].second);
+      m[index].first.push_back({bs, gen});
+      be->prepare(ut, change.key, std::move(bl), m[index].second);
+    }
   }
 
   auto push_failed = false;
   for (auto& [index, p] : m) {
-    auto& [buckets, entries] = p;
+    auto& [buckets, entries_to_push] = p;
 
     auto now = real_clock::now();
     // Failure on push isn't fatal.
     try {
-      co_await be->push(dpp, index, std::move(entries));
+      co_await be->push(dpp, index, std::move(entries_to_push));
     } catch (const std::exception& e) {
       push_failed = true;
       ldpp_dout(dpp, 5) << "RGWDataChangesLog::renew_entries(): Backend push failed "
@@ -948,17 +953,28 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
 		      << " shard_id=" << shard_id << " now="
 		      << now << " cur_expiration=" << dendl;
 
-    buffer::list bl;
-    rgw_data_change change;
-    change.entity_type = ENTITY_TYPE_BUCKET;
-    change.key = bs.get_key();
-    change.timestamp = now;
-    change.gen = gen.gen;
-    encode(change, bl);
+    // Commit entries for all zones in the zonegroup
+    for (const auto& [zone_id, _] : zone_shards) {
+      buffer::list bl;
+      rgw_data_change change;
+      change.entity_type = ENTITY_TYPE_BUCKET;
+      change.key = bs.get_key();
+      change.timestamp = now;
+      change.gen = gen.gen;
+      change.zone_id = zone_id;
+      encode(change, bl);
 
-    auto be = bes->head();
-    // Failure on push is fatal if we're bypassing semaphores.
-    be->push(dpp, index, now, change.key, std::move(bl), y);
+      auto be = bes->head();
+      // Failure on push is fatal if we're bypassing semaphores.
+      try {
+        be->push(dpp, index, now, change.key, std::move(bl), y);
+      } catch (const std::exception& e) {
+        ldpp_dout(dpp, 5) << "RGWDataChangesLog::add_entry(): Backend push failed "
+                          << "for zone " << zone_id << " with exception: " 
+                          << e.what() << dendl;
+        // Continue with other zones even if one fails
+      }
+    }
     return;
   }
 
@@ -1009,25 +1025,32 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
 
   sl.unlock();
 
-  buffer::list bl;
-  rgw_data_change change;
-  change.entity_type = ENTITY_TYPE_BUCKET;
-  change.key = bs.get_key();
-  change.timestamp = now;
-  change.gen = gen.gen;
-  encode(change, bl);
+  // Commit entries for all zones in the zonegroup
+  for (const auto& [zone_id, _] : zone_shards) {
+    buffer::list bl;
+    rgw_data_change change;
+    change.entity_type = ENTITY_TYPE_BUCKET;
+    change.key = bs.get_key();
+    change.timestamp = now;
+    change.gen = gen.gen;
+    change.zone_id = zone_id;
+    encode(change, bl);
 
-  ldpp_dout(dpp, 20) << "RGWDataChangesLog::add_entry() sending update with now=" << now << " cur_expiration=" << expiration << dendl;
+    ldpp_dout(dpp, 20) << "RGWDataChangesLog::add_entry() sending update for zone "
+                       << zone_id << " with now=" << now 
+                       << " cur_expiration=" << expiration << dendl;
 
-  auto be = bes->head();
-  // Failure on push isn't fatal.
-  try {
-    be->push(dpp, index, now, change.key, std::move(bl), y);
-  } catch (const std::exception& e) {
-    ldpp_dout(dpp, 5) << "RGWDataChangesLog::add_entry(): Backend push failed "
-		      << "with exception: " << e.what() << dendl;
+    auto be = bes->head();
+    // Failure on push isn't fatal.
+    try {
+      be->push(dpp, index, now, change.key, std::move(bl), y);
+    } catch (const std::exception& e) {
+      ldpp_dout(dpp, 5) << "RGWDataChangesLog::add_entry(): Backend push failed "
+			<< "for zone " << zone_id << " with exception: " 
+			<< e.what() << dendl;
+      // Continue with other zones even if one fails
+    }
   }
-
 
   now = real_clock::now();
 
