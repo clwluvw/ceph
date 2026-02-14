@@ -63,6 +63,7 @@ int RGWServices_Def::init(CephContext *cct,
   cls = std::make_unique<RGWSI_Cls>(cct);
   config_key_rados = std::make_unique<RGWSI_ConfigKey_RADOS>(cct);
   datalog_rados = std::make_unique<RGWDataChangesLog>(driver);
+  datalog_manager = std::make_unique<RGWDataChangesLogManager>();
   mdlog = std::make_unique<RGWSI_MDLog>(cct, run_sync, cfgstore);
   if (have_cache) {
     notify = std::make_unique<RGWSI_Notify>(cct);
@@ -133,13 +134,19 @@ int RGWServices_Def::init(CephContext *cct,
       return r;
     }
 
-    r = datalog_rados->start(dpp, &zone->get_zone(),
-			     zone->get_zone_params(),
-			     background_tasks);
+    // Initialize the datalog manager with per-zone logs
+    r = datalog_manager->init(dpp, driver, &zone->get_zone(),
+                              zone->get_zone_params(),
+                              zone->get_zone_data_notify_to_map(),
+                              background_tasks);
     if (r < 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to start datalog_rados service (" << cpp_strerror(-r) << dendl;
+      ldpp_dout(dpp, 0) << "ERROR: failed to initialize datalog_manager (" 
+                        << cpp_strerror(-r) << ")" << dendl;
       return r;
     }
+
+    // Point datalog_rados to the legacy log for backward compatibility
+    datalog_rados = datalog_manager->get_legacy_log();
 
     r = mdlog->start(y, dpp);
     if (r < 0) {
@@ -233,6 +240,11 @@ void RGWServices_Def::shutdown()
     return;
   }
 
+  // Stop datalog_manager which will handle stopping all logs
+  if (datalog_manager) {
+    datalog_manager->stop();
+  }
+  datalog_manager.reset();
   datalog_rados.reset();
   user_rados->shutdown();
   sync_modules->shutdown();
@@ -281,6 +293,7 @@ int RGWServices::do_init(CephContext *_cct, rgw::sal::RadosStore* driver, bool h
   config_key_rados = _svc.config_key_rados.get();
   config_key = config_key_rados;
   datalog_rados = _svc.datalog_rados.get();
+  datalog_manager = _svc.datalog_manager.get();
   mdlog = _svc.mdlog.get();
   zone = _svc.zone.get();
   zone_utils = _svc.zone_utils.get();

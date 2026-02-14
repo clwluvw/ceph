@@ -76,6 +76,7 @@ class RGWSI_SysObj_Cache;
 class RGWSI_User;
 class RGWSI_User_RADOS;
 class RGWDataChangesLog;
+class RGWDataChangesLogManager;
 class RGWAsyncRadosProcessor;
 
 struct RGWServices_Def
@@ -100,6 +101,7 @@ struct RGWServices_Def
   std::unique_ptr<RGWSI_SysObj_Cache> sysobj_cache;
   std::unique_ptr<RGWSI_User_RADOS> user_rados;
   std::unique_ptr<RGWDataChangesLog> datalog_rados;
+  std::unique_ptr<RGWDataChangesLogManager> datalog_manager;
   std::unique_ptr<RGWAsyncRadosProcessor> async_processor;
 
   RGWServices_Def();
@@ -131,6 +133,7 @@ struct RGWServices
   RGWSI_ConfigKey_RADOS *config_key_rados{nullptr};
   RGWSI_ConfigKey *config_key{nullptr};
   RGWDataChangesLog *datalog_rados{nullptr};
+  RGWDataChangesLogManager *datalog_manager{nullptr};
   RGWSI_MDLog *mdlog{nullptr};
   RGWSI_Zone *zone{nullptr};
   RGWSI_ZoneUtils *zone_utils{nullptr};
