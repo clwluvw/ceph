@@ -1788,16 +1788,32 @@ int RGWDataChangesLogManager::init(const DoutPrefixProvider* dpp,
     return r;
   }
 
-  // Check if we're the master zone - only master zones write per-zone logs for cross-zonegroup sync
-  bool is_master = driver->get_zone()->get_zonegroup().is_master_zonegroup();
-  if (!is_master) {
-    ldpp_dout(dpp, 10) << "not master zonegroup, skipping per-zone datalog creation" << dendl;
-    return 0;
-  }
+  // Determine if we're the master zone of our zonegroup
+  const auto& zonegroup = driver->get_zone()->get_zonegroup();
+  const auto& our_zone_id = driver->get_zone()->get_zone_params().get_id();
+  bool we_are_master_zone = (zonegroup.is_master_zonegroup() && 
+                              zonegroup.master_zone.id == our_zone_id);
+  
+  ldpp_dout(dpp, 10) << "our zone " << our_zone_id 
+                     << (we_are_master_zone ? " is" : " is not") 
+                     << " master zone of zonegroup" << dendl;
 
   // Create and start per-zone logs
+  // - For zones in our zonegroup: always create per-zone logs
+  // - For zones in other zonegroups: only create if we're the master zone
   for (const auto& [zone_id, conn] : target_zones) {
     (void)conn; // Suppress unused variable warning
+    
+    // Check if target zone is in our zonegroup
+    bool same_zonegroup = (zonegroup.zones.find(zone_id) != zonegroup.zones.end());
+    
+    // Skip cross-zonegroup logs if we're not the master zone
+    if (!same_zonegroup && !we_are_master_zone) {
+      ldpp_dout(dpp, 10) << "skipping per-zone datalog for cross-zonegroup zone " 
+                         << zone_id.id << " (we are not master zone)" << dendl;
+      continue;
+    }
+    
     std::string zone_prefix = fmt::format("data_log.{}", zone_id.id);
     auto zone_log = std::make_unique<RGWDataChangesLog>(driver, zone_prefix);
     r = zone_log->start(dpp, zone, zoneparams, background_tasks);
@@ -1823,7 +1839,8 @@ int RGWDataChangesLogManager::init(const DoutPrefixProvider* dpp,
     }
     zone_logs[zone_id] = std::move(zone_log);
     ldpp_dout(dpp, 10) << "started per-zone datalog for zone " << zone_id.id 
-                       << " with prefix " << zone_prefix << dendl;
+                       << " (same_zonegroup=" << same_zonegroup << ") "
+                       << "with prefix " << zone_prefix << dendl;
   }
 
   return 0;
@@ -1851,7 +1868,7 @@ asio::awaitable<void> RGWDataChangesLogManager::add_entry(
   
   // Spawn legacy log write
   asio::co_spawn(ex, 
-    [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
+    [this, dpp, bucket_info, gen, shard_id, results]() -> asio::awaitable<void> {
       try {
         co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
       } catch (...) {
@@ -1863,7 +1880,7 @@ asio::awaitable<void> RGWDataChangesLogManager::add_entry(
   // Spawn per-zone log writes in parallel
   for (auto& [zone_id, zone_log] : zone_logs) {
     asio::co_spawn(ex,
-      [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results]() -> asio::awaitable<void> {
+      [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results]() -> asio::awaitable<void> {
         try {
           co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
         } catch (...) {
@@ -1926,7 +1943,7 @@ void RGWDataChangesLogManager::add_entry(
   
   // Spawn legacy log write
   asio::co_spawn(ex,
-    [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
+    [this, dpp, bucket_info, gen, shard_id, results]() -> asio::awaitable<void> {
       try {
         co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
       } catch (...) {
@@ -1938,7 +1955,7 @@ void RGWDataChangesLogManager::add_entry(
   // Spawn per-zone log writes in parallel
   for (auto& [zone_id, zone_log] : zone_logs) {
     asio::co_spawn(ex,
-      [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results]() -> asio::awaitable<void> {
+      [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results]() -> asio::awaitable<void> {
         try {
           co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
         } catch (...) {
@@ -2007,7 +2024,7 @@ int RGWDataChangesLogManager::add_entry(
       
       // Spawn legacy log write
       asio::co_spawn(ex,
-        [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
+        [this, dpp, bucket_info, gen, shard_id, results]() -> asio::awaitable<void> {
           int r = legacy_log->add_entry(dpp, bucket_info, gen, shard_id, null_yield);
           if (r < 0) {
             ldpp_dout(dpp, 1) << "WARNING: failed to add entry to legacy datalog: " 
@@ -2021,7 +2038,7 @@ int RGWDataChangesLogManager::add_entry(
       // Spawn per-zone log writes in parallel
       for (auto& [zone_id, zone_log] : zone_logs) {
         asio::co_spawn(ex,
-          [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results]() -> asio::awaitable<void> {
+          [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results]() -> asio::awaitable<void> {
             int r = zone_log->add_entry(dpp, bucket_info, gen, shard_id, null_yield);
             if (r < 0) {
               ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
