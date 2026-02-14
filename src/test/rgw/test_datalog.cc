@@ -701,10 +701,6 @@ TEST_F(PerZoneDataLogTest, IndependentTrimPerZone) {
           << "Zone2 log entries should be unchanged";
     }
 
-    // Clean up
-    datalog1->blocking_shutdown();
-    datalog2->blocking_shutdown();
-
     co_return;
   });
 }
