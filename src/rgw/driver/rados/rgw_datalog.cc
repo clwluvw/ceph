@@ -74,6 +74,9 @@ void rgw_data_change::dump(ceph::Formatter *f) const
   utime_t ut(timestamp);
   encode_json("timestamp", ut, f);
   encode_json("gen", gen, f);
+  if (!zone_id.id.empty()) {
+    encode_json("zone_id", zone_id.id, f);
+  }
 }
 
 void rgw_data_change::decode_json(JSONObj *obj) {
@@ -89,6 +92,10 @@ void rgw_data_change::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("timestamp", ut, obj);
   timestamp = ut.to_real_time();
   JSONDecoder::decode_json("gen", gen, obj);
+  std::string zone_id_str;
+  if (JSONDecoder::decode_json("zone_id", zone_id_str, obj, true)) {
+    zone_id = rgw_zone_id(zone_id_str);
+  }
 }
 
 std::list<rgw_data_change> rgw_data_change::generate_test_instances() {
@@ -441,9 +448,19 @@ void DataLogBackends::handle_empty_to(uint64_t new_tail) {
 int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 			     const RGWZone* zone,
 			     const RGWZoneParams& zoneparams,
+			     const std::map<rgw_zone_id, RGWZone>* zones,
 			     bool background_tasks) noexcept
 {
   log_data = zone->log_data;
+  
+  // Initialize per-zone shards map from the zonegroup zones
+  if (zones) {
+    for (const auto& [zone_id, zone_info] : *zones) {
+      // Each zone gets num_shards for now (default 128)
+      zone_shards[zone_id] = num_shards;
+    }
+  }
+  
   try {
     // Blocking in startup code, not ideal, but won't hurt anything.
     asio::co_spawn(executor,
@@ -866,8 +883,24 @@ std::string RGWDataChangesLog::get_oid(uint64_t gen_id, int i) const {
 	  fmt::format("{}.{}", prefix, i));
 }
 
+std::string RGWDataChangesLog::get_oid(uint64_t gen_id, int i, const rgw_zone_id& zone_id) const {
+  if (zone_id.id.empty()) {
+    return get_oid(gen_id, i);
+  }
+  return (gen_id > 0 ?
+	  fmt::format("{}_{}@G{}.{}", prefix, zone_id.id, gen_id, i) :
+	  fmt::format("{}_{}.{}", prefix, zone_id.id, i));
+}
+
 std::string RGWDataChangesLog::get_sem_set_oid(int i) const {
   return fmt::format("_sem_set{}.{}", prefix, i);
+}
+
+std::string RGWDataChangesLog::get_sem_set_oid(int i, const rgw_zone_id& zone_id) const {
+  if (zone_id.id.empty()) {
+    return get_sem_set_oid(i);
+  }
+  return fmt::format("_sem_set{}_{}.{}", prefix, zone_id.id, i);
 }
 
 asio::awaitable<void>

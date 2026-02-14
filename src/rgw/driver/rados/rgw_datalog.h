@@ -72,21 +72,23 @@ struct rgw_data_change {
   std::string key;
   ceph::real_time timestamp;
   uint64_t gen = 0;
+  rgw_zone_id zone_id; // Zone for which this change is tracked
 
   void encode(ceph::buffer::list& bl) const {
-    // require decoders to recognize v2 when gen>0
-    const uint8_t compat = (gen == 0) ? 1 : 2;
-    ENCODE_START(2, compat, bl);
+    // require decoders to recognize v3 when zone_id is set
+    const uint8_t compat = (gen == 0 && zone_id.id.empty()) ? 1 : (gen > 0 && zone_id.id.empty()) ? 2 : 3;
+    ENCODE_START(3, compat, bl);
     auto t = std::uint8_t(entity_type);
     encode(t, bl);
     encode(key, bl);
     encode(timestamp, bl);
     encode(gen, bl);
+    encode(zone_id, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-     DECODE_START(2, bl);
+     DECODE_START(3, bl);
      std::uint8_t t;
      decode(t, bl);
      entity_type = DataLogEntityType(t);
@@ -96,6 +98,9 @@ struct rgw_data_change {
        gen = 0;
      } else {
        decode(gen, bl);
+     }
+     if (struct_v >= 3) {
+       decode(zone_id, bl);
      }
      DECODE_FINISH(bl);
   }
@@ -110,7 +115,8 @@ inline std::ostream& operator <<(std::ostream& m,
   return m << "[entity_type: " << c.entity_type
 	   << ", key: " << c.key
 	   << ", timestamp: " << c.timestamp
-	   << ", gen: " << c.gen << "]";
+	   << ", gen: " << c.gen
+	   << ", zone_id: " << c.zone_id << "]";
 }
 
 struct rgw_data_change_log_entry {
@@ -378,9 +384,17 @@ class RGWDataChangesLog {
   ceph::mono_time last_recovery = ceph::mono_clock::zero();
 
   const int num_shards;
+  // Map of zone_id to number of shards per zone for multi-zone support
+  std::map<rgw_zone_id, int> zone_shards;
   std::string get_prefix() { return "data_log"; }
   std::string metadata_log_oid() {
     return get_prefix() + "generations_metadata";
+  }
+  std::string metadata_log_oid(const rgw_zone_id& zone_id) {
+    if (zone_id.id.empty()) {
+      return metadata_log_oid();
+    }
+    return get_prefix() + "_" + zone_id.id + "_generations_metadata";
   }
   std::string prefix;
 
@@ -449,7 +463,9 @@ public:
 			      bool recovery, bool watch, bool renew);
 
   int start(const DoutPrefixProvider *dpp, const RGWZone* _zone,
-	    const RGWZoneParams& zoneparams, bool background_tasks) noexcept;
+	    const RGWZoneParams& zoneparams, 
+	    const std::map<rgw_zone_id, RGWZone>* zones,
+	    bool background_tasks) noexcept;
   asio::awaitable<bool> establish_watch(const DoutPrefixProvider* dpp,
 					std::string_view oid);
   asio::awaitable<void> process_notification(const DoutPrefixProvider* dpp,
@@ -508,7 +524,9 @@ public:
   // a marker that compares greater than any other
   std::string max_marker() const;
   std::string get_oid(uint64_t gen_id, int shard_id) const;
+  std::string get_oid(uint64_t gen_id, int shard_id, const rgw_zone_id& zone_id) const;
   std::string get_sem_set_oid(int shard_id) const;
+  std::string get_sem_set_oid(int shard_id, const rgw_zone_id& zone_id) const;
 
 
   asio::awaitable<std::pair<bc::flat_map<std::string, uint64_t>,
