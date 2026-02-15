@@ -1867,12 +1867,13 @@ asio::awaitable<void> RGWDataChangesLogManager::add_entry(
   
   // Spawn legacy log write
   asio::co_spawn(ex, 
-    [this, dpp, bucket_info, gen, shard_id, results]() -> asio::awaitable<void> {
+    [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
       try {
         co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
       } catch (...) {
         (*results)[0] = WriteResult{std::nullopt, std::current_exception()};
       }
+      co_return;
     }(),
     group);
   
@@ -1880,7 +1881,7 @@ asio::awaitable<void> RGWDataChangesLogManager::add_entry(
   size_t idx = 1;
   for (auto& [zone_id, zone_log] : zone_logs) {
     asio::co_spawn(ex,
-      [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
+      [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
         try {
           co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
         } catch (...) {
@@ -1888,6 +1889,7 @@ asio::awaitable<void> RGWDataChangesLogManager::add_entry(
                             << zone_id.id << " datalog" << dendl;
           (*results)[idx] = WriteResult{zone_id, std::current_exception()};
         }
+        co_return;
       }(),
       group);
     ++idx;
@@ -1944,12 +1946,13 @@ void RGWDataChangesLogManager::add_entry(
   
   // Spawn legacy log write
   asio::co_spawn(ex,
-    [this, dpp, bucket_info, gen, shard_id, results]() -> asio::awaitable<void> {
+    [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
       try {
         co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
       } catch (...) {
         (*results)[0] = WriteResult{std::nullopt, std::current_exception()};
       }
+      co_return;
     }(),
     group);
   
@@ -1957,7 +1960,7 @@ void RGWDataChangesLogManager::add_entry(
   size_t idx = 1;
   for (auto& [zone_id, zone_log] : zone_logs) {
     asio::co_spawn(ex,
-      [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
+      [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
         try {
           co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
         } catch (...) {
@@ -1965,6 +1968,7 @@ void RGWDataChangesLogManager::add_entry(
                             << zone_id.id << " datalog" << dendl;
           (*results)[idx] = WriteResult{zone_id, std::current_exception()};
         }
+        co_return;
       }(),
       group);
     ++idx;
@@ -2027,7 +2031,7 @@ int RGWDataChangesLogManager::add_entry(
       
       // Spawn legacy log write
       asio::co_spawn(ex,
-        [this, dpp, bucket_info, gen, shard_id, results]() -> asio::awaitable<void> {
+        [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
           int r = legacy_log->add_entry(dpp, bucket_info, gen, shard_id, null_yield);
           if (r < 0) {
             ldpp_dout(dpp, 1) << "WARNING: failed to add entry to legacy datalog: " 
@@ -2042,7 +2046,7 @@ int RGWDataChangesLogManager::add_entry(
       size_t idx = 1;
       for (auto& [zone_id, zone_log] : zone_logs) {
         asio::co_spawn(ex,
-          [dpp, bucket_info, gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
+          [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
             int r = zone_log->add_entry(dpp, bucket_info, gen, shard_id, null_yield);
             if (r < 0) {
               ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 

@@ -713,7 +713,9 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   
   // Select zone-specific or legacy log based on zone-id parameter
-  auto [datalog, ret] = resolve_datalog(this, store, zone_id_str);
+  auto datalog_result = resolve_datalog(this, store, zone_id_str);
+  RGWDataChangesLog* datalog = datalog_result.first;
+  int ret = datalog_result.second;
   if (ret < 0) {
     op_ret = ret;
     return;
@@ -798,7 +800,9 @@ void RGWOp_DATALog_ShardInfo::execute(optional_yield y) {
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   
   // Select zone-specific or legacy log based on zone-id parameter
-  auto [datalog, ret] = resolve_datalog(this, store, zone_id_str);
+  auto datalog_result = resolve_datalog(this, store, zone_id_str);
+  RGWDataChangesLog* datalog = datalog_result.first;
+  int ret = datalog_result.second;
   if (ret < 0) {
     op_ret = ret;
     return;
@@ -959,7 +963,9 @@ void RGWOp_DATALog_Delete::execute(optional_yield y) {
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   
   // Select zone-specific or legacy log based on zone-id parameter
-  auto [datalog, ret] = resolve_datalog(this, store, zone_id_str);
+  auto datalog_result = resolve_datalog(this, store, zone_id_str);
+  RGWDataChangesLog* datalog = datalog_result.first;
+  int ret = datalog_result.second;
   if (ret < 0) {
     op_ret = ret;
     return;
