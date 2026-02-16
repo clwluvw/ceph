@@ -2029,29 +2029,38 @@ int RGWDataChangesLogManager::add_entry(
       };
       auto results = std::make_shared<std::vector<WriteResult>>(total_writes);
       
-      // Spawn legacy log write
+      // Spawn legacy log write - use awaitable version to avoid deadlock
       asio::co_spawn(ex,
         [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
-          int r = legacy_log->add_entry(dpp, bucket_info, gen, shard_id, null_yield);
-          if (r < 0) {
+          try {
+            co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
+          } catch (const std::exception& e) {
             ldpp_dout(dpp, 1) << "WARNING: failed to add entry to legacy datalog: " 
-                              << cpp_strerror(-r) << dendl;
-            (*results)[0] = WriteResult{std::nullopt, r};
+                              << e.what() << dendl;
+            (*results)[0] = WriteResult{std::nullopt, -EIO};
+          } catch (...) {
+            ldpp_dout(dpp, 1) << "WARNING: unknown error adding entry to legacy datalog" << dendl;
+            (*results)[0] = WriteResult{std::nullopt, -EIO};
           }
           co_return;
         }(),
         group);
       
-      // Spawn per-zone log writes in parallel
+      // Spawn per-zone log writes in parallel - use awaitable version to avoid deadlock
       size_t idx = 1;
       for (auto& [zone_id, zone_log] : zone_logs) {
         asio::co_spawn(ex,
           [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
-            int r = zone_log->add_entry(dpp, bucket_info, gen, shard_id, null_yield);
-            if (r < 0) {
+            try {
+              co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
+            } catch (const std::exception& e) {
               ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
-                                << zone_id.id << " datalog: " << cpp_strerror(-r) << dendl;
-              (*results)[idx] = WriteResult{zone_id, r};
+                                << zone_id.id << " datalog: " << e.what() << dendl;
+              (*results)[idx] = WriteResult{zone_id, -EIO};
+            } catch (...) {
+              ldpp_dout(dpp, 1) << "WARNING: unknown error adding entry to zone " 
+                                << zone_id.id << " datalog" << dendl;
+              (*results)[idx] = WriteResult{zone_id, -EIO};
             }
             co_return;
           }(),

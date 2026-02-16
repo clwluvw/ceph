@@ -515,12 +515,12 @@ public:
     datalog1 = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
                                                     rados(), std::nullopt, 
                                                     std::nullopt, "data_log.zone1");
-    co_await datalog1->start(dpp(), rgw_pool(pool_name()), false, false, false);
+    co_await datalog1->start(dpp(), rgw_pool(pool_name()), true, false, false);
     
     datalog2 = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
                                                     rados(), std::nullopt,
                                                     std::nullopt, "data_log.zone2");
-    co_await datalog2->start(dpp(), rgw_pool(pool_name()), false, false, false);
+    co_await datalog2->start(dpp(), rgw_pool(pool_name()), true, false, false);
     co_return;
   }
 
@@ -571,7 +571,8 @@ TEST_F(PerZoneDataLogTest, SeparateOIDsPerPrefix) {
       co_await rados().execute(oid1, pool(), std::move(read_op1), nullptr,
                               asio::use_awaitable);
     } catch (const sys::system_error& e) {
-      FAIL() << "Zone1 log object doesn't exist: " << e.what();
+      ADD_FAILURE() << "Zone1 log object doesn't exist: " << e.what();
+      co_return;
     }
 
     try {
@@ -583,7 +584,8 @@ TEST_F(PerZoneDataLogTest, SeparateOIDsPerPrefix) {
       co_await rados().execute(oid2, pool(), std::move(read_op2), nullptr,
                               asio::use_awaitable);
     } catch (const sys::system_error& e) {
-      FAIL() << "Zone2 log object doesn't exist: " << e.what();
+      ADD_FAILURE() << "Zone2 log object doesn't exist: " << e.what();
+      co_return;
     }
 
     co_return;
@@ -663,14 +665,20 @@ TEST_F(PerZoneDataLogTest, IndependentTrimPerZone) {
         co_await datalog1->list_entries(dpp(), shard_id, 100, {});
     
     EXPECT_FALSE(entries1.empty()) << "Zone1 log should have entries";
-    ASSERT_GT(entries1.size(), 0) << "Need at least one entry for trim test";
+    if (entries1.empty()) {
+      ADD_FAILURE() << "Need at least one entry for trim test";
+      co_return;
+    }
 
     // List entries from zone2 log
     std::tie(entries2, marker2, truncated2) =
         co_await datalog2->list_entries(dpp(), shard_id, 100, {});
     
     EXPECT_FALSE(entries2.empty()) << "Zone2 log should have entries";
-    ASSERT_GT(entries2.size(), 0) << "Need at least one entry for trim test";
+    if (entries2.empty()) {
+      ADD_FAILURE() << "Need at least one entry for trim test";
+      co_return;
+    }
 
     // Trim zone1 log up to the marker of the first entry
     std::string trim_marker1 = entries1[0].log_id;
