@@ -1548,6 +1548,12 @@ void RGWDataChangesLog::blocking_shutdown()
     bes->shutdown();
     bes.reset();
   }
+  for (auto& [zid, zlog] : zone_logs) {
+    if (zlog.bes) {
+      zlog.bes->shutdown();
+      zlog.bes.reset();
+    }
+  }
   return;
 }
 
