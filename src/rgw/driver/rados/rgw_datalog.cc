@@ -447,15 +447,25 @@ void DataLogBackends::handle_empty_to(uint64_t new_tail) {
 int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 			     const RGWZone* zone,
 			     const RGWZoneParams& zoneparams,
+			     const RGWZoneGroup& zonegroup,
 			     const std::map<rgw_zone_id, RGWRESTConn*>& notify_zones,
+			     bool legacy_writes_disabled,
 			     bool background_tasks) noexcept
 {
   log_data = zone->log_data;
-  // Extract target zone IDs from the notify map
+  is_master_zonegroup_ = zonegroup.is_master_zonegroup();
+  legacy_writes_disabled_ = legacy_writes_disabled;
+
+  // Only create per-zone logs in master zonegroup (where data originates)
   std::vector<rgw_zone_id> target_zone_ids;
-  target_zone_ids.reserve(notify_zones.size());
-  for (const auto& [zid, _] : notify_zones) {
-    target_zone_ids.push_back(zid);
+  if (is_master_zonegroup_) {
+    target_zone_ids.reserve(notify_zones.size());
+    for (const auto& [zid, _] : notify_zones) {
+      target_zone_ids.push_back(zid);
+    }
+  } else {
+    ldpp_dout(dpp, 10) << "Not in master zonegroup, skipping per-zone datalog "
+		       << "initialization" << dendl;
   }
   try {
     // Blocking in startup code, not ideal, but won't hurt anything.
@@ -783,17 +793,23 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
   entries.swap(cur_cycle);
   for (const auto& [bs, gen] : entries) {
     unsigned index = choose_oid(bs);
+    auto key = BucketGen{bs, gen}.get_key();
     // Legacy semaphores
-    semaphores[index].insert(BucketGen{bs, gen}.get_key());
+    if (!legacy_writes_disabled_) {
+      semaphores[index].insert(key);
+    }
     // Per-zone semaphores
     for (auto& [zid, zlog] : zone_logs) {
-      zlog.semaphores[index].insert(BucketGen{bs, gen}.get_key());
+      zlog.semaphores[index].insert(key);
     }
   }
   l.unlock();
 
   auto ut = real_clock::now();
-  auto be = bes->head();
+  boost::intrusive_ptr<RGWDataChangesBE> be;
+  if (!legacy_writes_disabled_) {
+    be = bes->head();
+  }
 
   for (const auto& [bs, gen] : entries) {
     auto index = choose_oid(bs);
@@ -807,8 +823,10 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
     encode(change, bl);
 
     // Prepare for legacy backend
-    legacy_m[index].first.push_back({bs, gen});
-    be->prepare(ut, change.key, buffer::list{bl}, legacy_m[index].second);
+    if (be) {
+      legacy_m[index].first.push_back({bs, gen});
+      be->prepare(ut, change.key, buffer::list{bl}, legacy_m[index].second);
+    }
 
     // Prepare for each per-zone backend
     for (auto& [zid, zlog] : zone_logs) {
@@ -824,21 +842,24 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
   // Push to all backends in parallel using spawn_group
   {
     auto ex = co_await asio::this_coro::executor;
-    auto group = async::spawn_group(ex, 1 + zone_logs.size());
+    auto num_spawns = zone_logs.size() + (be ? 1 : 0);
+    auto group = async::spawn_group(ex, num_spawns);
 
-    // Legacy push
-    asio::co_spawn(ex, [&]() -> asio::awaitable<void> {
-      for (auto& [index, p] : legacy_m) {
-	auto& [buckets, shard_entries] = p;
-	try {
-	  co_await be->push(dpp, index, std::move(shard_entries));
-	} catch (const std::exception& e) {
-	  push_failed = true;
-	  ldpp_dout(dpp, 5) << "RGWDataChangesLog::renew_entries(): "
-			    << "Legacy push failed: " << e.what() << dendl;
+    // Legacy push (only if not disabled)
+    if (be) {
+      asio::co_spawn(ex, [&]() -> asio::awaitable<void> {
+	for (auto& [index, p] : legacy_m) {
+	  auto& [buckets, shard_entries] = p;
+	  try {
+	    co_await be->push(dpp, index, std::move(shard_entries));
+	  } catch (const std::exception& e) {
+	    push_failed = true;
+	    ldpp_dout(dpp, 5) << "RGWDataChangesLog::renew_entries(): "
+			      << "Legacy push failed: " << e.what() << dendl;
+	  }
 	}
-      }
-    }, group);
+      }, group);
+    }
 
     // Per-zone pushes
     for (auto& [zid, zlog] : zone_logs) {
@@ -863,13 +884,12 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
   }
 
   // Update renewed timestamps (shared, not per-zone)
+  // Use entries directly since legacy_m may be empty when legacy disabled
   auto now = real_clock::now();
   auto expiration = now;
   expiration += ceph::make_timespan(cct->_conf->rgw_data_log_window);
-  for (auto& [index, p] : legacy_m) {
-    for (auto& [bs, gen] : p.first) {
-      update_renewed(bs, gen, expiration);
-    }
+  for (const auto& [bs, gen] : entries) {
+    update_renewed(bs, gen, expiration);
   }
 
   if (push_failed) {
@@ -879,22 +899,24 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
   // If we didn't error in pushing, we can now decrement the semaphores
   // Legacy semaphores
   l.lock();
-  for (auto index = 0u; index < unsigned(num_shards); ++index) {
-    using neorados::WriteOp;
-    auto& keys = semaphores[index];
-    while (!keys.empty()) {
-      bc::flat_set<std::string> batch;
-      auto to_copy = std::min(sem_max_keys, keys.size());
-      std::copy_n(keys.begin(), to_copy,
-		  std::inserter(batch, batch.end()));
-      auto op = WriteOp{}.exec(ss::decrement(std::move(batch)));
-      l.unlock();
-      co_await rados->execute(get_sem_set_oid(index), loc, std::move(op),
-			      asio::use_awaitable);
-      l.lock();
-      auto iter = keys.cbegin();
-      std::advance(iter, to_copy);
-      keys.erase(keys.cbegin(), iter);
+  if (!legacy_writes_disabled_) {
+    for (auto index = 0u; index < unsigned(num_shards); ++index) {
+      using neorados::WriteOp;
+      auto& keys = semaphores[index];
+      while (!keys.empty()) {
+	bc::flat_set<std::string> batch;
+	auto to_copy = std::min(sem_max_keys, keys.size());
+	std::copy_n(keys.begin(), to_copy,
+		    std::inserter(batch, batch.end()));
+	auto op = WriteOp{}.exec(ss::decrement(std::move(batch)));
+	l.unlock();
+	co_await rados->execute(get_sem_set_oid(index), loc, std::move(op),
+				asio::use_awaitable);
+	l.lock();
+	auto iter = keys.cbegin();
+	std::advance(iter, to_copy);
+	keys.erase(keys.cbegin(), iter);
+      }
     }
   }
   // Per-zone semaphores
@@ -1063,9 +1085,11 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
     change.gen = gen.gen;
     encode(change, bl);
 
-    auto be = bes->head();
     // Failure on push is fatal if we're bypassing semaphores.
-    be->push(dpp, index, now, change.key, buffer::list{bl}, y);
+    if (!legacy_writes_disabled_) {
+      auto be = bes->head();
+      be->push(dpp, index, now, change.key, buffer::list{bl}, y);
+    }
     // Also push to per-zone backends (dual-write)
     for (auto& [zid, zlog] : zone_logs) {
       auto zone_be = zlog.bes->head();
@@ -1099,8 +1123,10 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
     if (need_sem_set) {
       using neorados::WriteOp;
       // Legacy semaphore
-      rados->execute(get_sem_set_oid(index), loc,
-		     WriteOp{}.exec(ss::increment(std::string{key})), y);
+      if (!legacy_writes_disabled_) {
+	rados->execute(get_sem_set_oid(index), loc,
+		       WriteOp{}.exec(ss::increment(std::string{key})), y);
+      }
       // Per-zone semaphores
       for (auto& [zid, zlog] : zone_logs) {
 	rados->execute(get_sem_set_oid(zid, index), loc,
@@ -1137,15 +1163,17 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
 
   ldpp_dout(dpp, 20) << "RGWDataChangesLog::add_entry() sending update with now=" << now << " cur_expiration=" << expiration << dendl;
 
-  auto be = bes->head();
   // Failure on push isn't fatal.
-  try {
-    be->push(dpp, index, now, change.key, buffer::list{bl}, y);
-  } catch (const std::exception& e) {
-    ldpp_dout(dpp, 5) << "RGWDataChangesLog::add_entry(): Backend push failed "
-		      << "with exception: " << e.what() << dendl;
+  if (!legacy_writes_disabled_) {
+    auto be = bes->head();
+    try {
+      be->push(dpp, index, now, change.key, buffer::list{bl}, y);
+    } catch (const std::exception& e) {
+      ldpp_dout(dpp, 5) << "RGWDataChangesLog::add_entry(): Backend push failed "
+			<< "with exception: " << e.what() << dendl;
+    }
   }
-  // Also push to per-zone backends (dual-write)
+  // Also push to per-zone backends
   for (auto& [zid, zlog] : zone_logs) {
     try {
       auto zone_be = zlog.bes->head();
@@ -1588,16 +1616,32 @@ void RGWDataChangesLog::mark_modified(int shard_id, const rgw_bucket_shard& bs, 
   }
 
   auto key = bs.get_key();
+  rgw_data_notify_entry entry{key, gen};
   {
     std::shared_lock rl{modified_lock}; // read lock to check for existence
+    // Check legacy shards first
     auto shard = modified_shards.find(shard_id);
-    if (shard != modified_shards.end() && shard->second.count({key, gen})) {
+    if (shard != modified_shards.end() && shard->second.count(entry)) {
       return;
+    }
+    // Also check per-zone shards (when legacy disabled, only these are populated)
+    if (!zone_modified_shards.empty()) {
+      auto zit = zone_modified_shards.begin();
+      auto zshard = zit->second.find(shard_id);
+      if (zshard != zit->second.end() && zshard->second.count(entry)) {
+	return;
+      }
     }
   }
 
   std::unique_lock wl{modified_lock}; // write lock for insertion
-  modified_shards[shard_id].insert(rgw_data_notify_entry{key, gen});
+  if (!legacy_writes_disabled_) {
+    modified_shards[shard_id].insert(entry);
+  }
+  // Also track per-zone modified shards for zone-specific notifications
+  for (const auto& [zid, _] : zone_logs) {
+    zone_modified_shards[zid][shard_id].insert(entry);
+  }
 }
 
 std::string RGWDataChangesLog::max_marker() const {

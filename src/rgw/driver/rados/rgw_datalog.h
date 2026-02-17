@@ -47,6 +47,7 @@
 #include "rgw_sync_policy.h"
 #include "rgw_trim_bilog.h"
 #include "rgw_zone.h"
+#include "rgw_zone_features.h"
 
 #include "common/async/spawn_group.h"
 
@@ -371,6 +372,8 @@ class RGWDataChangesLog {
   bool log_data = false;
   std::unique_ptr<DataLogBackends> bes; // legacy backend
   std::map<rgw_zone_id, ZoneLog> zone_logs; // per-zone backends
+  bool is_master_zonegroup_ = false; // only create per-zone logs in master zonegroup
+  bool legacy_writes_disabled_ = false; // when per_zone_datalog feature enabled everywhere
 
   using executor_t = asio::io_context::executor_type;
   executor_t executor;
@@ -403,6 +406,9 @@ class RGWDataChangesLog {
   std::mutex lock;
   std::shared_mutex modified_lock;
   bc::flat_map<int, bc::flat_set<rgw_data_notify_entry>> modified_shards;
+  // Per-zone modified shards for zone-specific notifications
+  std::map<rgw_zone_id, bc::flat_map<int, bc::flat_set<rgw_data_notify_entry>>>
+    zone_modified_shards;
 
   std::atomic<bool> down_flag = { true };
   bool ran_background = false;
@@ -467,7 +473,9 @@ public:
 
   int start(const DoutPrefixProvider *dpp, const RGWZone* _zone,
 	    const RGWZoneParams& zoneparams,
+	    const RGWZoneGroup& zonegroup,
 	    const std::map<rgw_zone_id, RGWRESTConn*>& notify_zones,
+	    bool legacy_writes_disabled,
 	    bool background_tasks) noexcept;
   asio::awaitable<bool> establish_watch(const DoutPrefixProvider* dpp,
 					std::string_view oid);
@@ -514,6 +522,14 @@ public:
     decltype(modified_shards) modified;
     modified.swap(modified_shards);
     modified_shards.clear();
+    return modified;
+  }
+  // Per-zone: returns a map of zone_id -> modified_shards for zone-specific notifications
+  auto read_clear_zone_modified() {
+    std::unique_lock wl{modified_lock};
+    decltype(zone_modified_shards) modified;
+    modified.swap(zone_modified_shards);
+    zone_modified_shards.clear();
     return modified;
   }
 

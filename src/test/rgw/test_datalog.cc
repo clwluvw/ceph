@@ -762,6 +762,71 @@ CORO_TEST_F(DataLogMultiZone, PerZoneRecovery, DataLogMultiZone) {
   co_return;
 }
 
+// --- Legacy writes disabled tests ---
+
+class DataLogLegacyDisabled : public DataLogTestBase {
+private:
+  asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
+    auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
+						       rados());
+    std::vector<rgw_zone_id> target_zones = {zone_a, zone_b};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()), target_zones,
+			    false, true, false);
+    // Simulate per_zone_datalog feature enabled
+    datalog->legacy_writes_disabled_ = true;
+    co_return std::move(datalog);
+  }
+
+protected:
+  asio::awaitable<bc::flat_map<BucketGen, uint64_t>>
+  read_all_zone_log(const DoutPrefixProvider* dpp, const rgw_zone_id& zone) {
+    bc::flat_map<BucketGen, uint64_t> all_keys;
+    for (auto shard = 0; shard < datalog->num_shards; ++shard) {
+      std::string marker;
+      bool truncated = true;
+      while (truncated) {
+	auto [entries, outmarker, trunc] =
+	  co_await datalog->list_entries(dpp, zone, shard, 1'000, marker);
+	truncated = trunc;
+	marker = std::move(outmarker);
+	for (const auto& entry : entries) {
+	  auto key = fmt::format("{}:{}", entry.entry.key, entry.entry.gen);
+	  all_keys[BucketGen{key}] += 1;
+	}
+      }
+    }
+    co_return std::move(all_keys);
+  }
+};
+
+// When legacy writes are disabled, entries should only appear in per-zone logs
+CORO_TEST_F(DataLogLegacyDisabled, NoLegacyWrites, DataLogLegacyDisabled) {
+  for (const auto& bg : ref) {
+    co_await add_entry(dpp(), bg);
+    co_await add_entry(dpp(), bg);
+  }
+  co_await renew_entries(dpp());
+
+  // Legacy log should be empty (no writes)
+  auto legacy_entries = co_await read_all_log(dpp());
+  EXPECT_TRUE(legacy_entries.empty())
+    << "Legacy log should be empty when legacy writes are disabled";
+
+  // Per-zone logs should still have entries
+  auto zone_a_entries = co_await read_all_zone_log(dpp(), zone_a);
+  for (const auto& bg : ref) {
+    EXPECT_TRUE(zone_a_entries.contains(bg))
+      << "Zone A should have entry for " << bg;
+  }
+
+  auto zone_b_entries = co_await read_all_zone_log(dpp(), zone_b);
+  for (const auto& bg : ref) {
+    EXPECT_TRUE(zone_b_entries.contains(bg))
+      << "Zone B should have entry for " << bg;
+  }
+  co_return;
+}
+
 // Verify invalid zone_id throws
 CORO_TEST_F(DataLogMultiZone, InvalidZoneThrows, DataLogMultiZone) {
   rgw_zone_id bad_zone{"nonexistent-zone"};
