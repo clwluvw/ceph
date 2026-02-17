@@ -356,10 +356,12 @@ public:
         yield {
           char buf[16];
           snprintf(buf, sizeof(buf), "%d", shard_id);
+          auto my_zone_id = sync_env->svc->zone->zone_id().id;
           rgw_http_param_pair pairs[] = { { "type" , "data" },
                                           { "id", buf },
                                           { "marker", marker.c_str() },
                                           { "extra-info", "true" },
+                                          { "zone-id", my_zone_id.c_str() },
                                           { NULL, NULL } };
 
           string p = "/admin/log/";
