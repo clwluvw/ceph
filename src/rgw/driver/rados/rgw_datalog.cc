@@ -499,6 +499,32 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
   return 0;
 }
 
+int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
+			     const RGWZone* zone,
+			     const RGWZoneParams& zoneparams,
+			     bool background_tasks) noexcept
+{
+  log_data = zone->log_data;
+  try {
+    asio::co_spawn(executor,
+		   start(dpp, zoneparams.log_pool,
+			 background_tasks, background_tasks,
+			 background_tasks),
+		   async::use_blocked);
+  } catch (const sys::system_error& e) {
+    ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
+		       << ": Failed to start datalog: " << e.what()
+		       << dendl;
+    return ceph::from_error_code(e.code());
+  } catch (const std::exception& e) {
+    ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
+		       << ": Failed to start datalog: " << e.what()
+		       << dendl;
+    return ceph::from_exception(std::current_exception());
+  }
+  return 0;
+}
+
 asio::awaitable<void>
 RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 			 const rgw_pool& log_pool,

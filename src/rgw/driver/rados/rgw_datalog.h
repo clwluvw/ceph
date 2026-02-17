@@ -483,6 +483,10 @@ public:
 	    const std::map<rgw_zone_id, RGWRESTConn*>& notify_zones,
 	    bool legacy_writes_disabled,
 	    bool background_tasks) noexcept;
+  // Original signature for testing - bypasses per-zone setup
+  int start(const DoutPrefixProvider *dpp, const RGWZone* _zone,
+	    const RGWZoneParams& zoneparams,
+	    bool background_tasks) noexcept;
   asio::awaitable<bool> establish_watch(const DoutPrefixProvider* dpp,
 					std::string_view oid);
   asio::awaitable<void> process_notification(const DoutPrefixProvider* dpp,
