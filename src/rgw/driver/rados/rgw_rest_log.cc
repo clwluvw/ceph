@@ -701,6 +701,7 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
       datalog->list_entries(this, zone_id, shard_id, max_entries, marker),
       std::tie(entries, last_marker, truncated),
       "RGWDataChangesLog::list_entries(zone)", y);
+    if (op_ret < 0) return;
 
     RGWDataChangesLogInfo info;
     op_ret = rgw::run_coro(
@@ -715,6 +716,7 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
       datalog->list_entries(this, shard_id, max_entries, marker),
       std::tie(entries, last_marker, truncated),
       "RGWDataChangesLog::list_entries", y);
+    if (op_ret < 0) return;
 
     RGWDataChangesLogInfo info;
     op_ret = rgw::run_coro(

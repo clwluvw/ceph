@@ -1402,7 +1402,7 @@ asio::awaitable<RGWDataChangesLogInfo>
 RGWDataChangesLog::get_info(const DoutPrefixProvider* dpp, int shard_id)
 {
   if (shard_id >= num_shards) [[unlikely]] {
-    throw sys::system_error{-EINVAL, sys::generic_category(),
+    throw sys::system_error{EINVAL, sys::generic_category(),
       fmt::format(
 	"{} is not a valid shard. Valid shards are integers in [0, {})",
 	shard_id, num_shards)};
@@ -1447,7 +1447,7 @@ RGWDataChangesLog::trim_entries(const DoutPrefixProvider *dpp, int shard_id,
 				    std::string_view marker)
 {
   if (shard_id >= num_shards) [[unlikely]] {
-    throw sys::system_error{-EINVAL, sys::generic_category(),
+    throw sys::system_error{EINVAL, sys::generic_category(),
       fmt::format(
 	"{} is not a valid shard. Valid shards are integers in [0, {})",
 	shard_id, num_shards)};
@@ -1820,7 +1820,7 @@ RGWDataChangesLog::get_info(const DoutPrefixProvider* dpp,
       fmt::format("No per-zone datalog for zone {}", zone.id)};
   }
   if (shard_id >= num_shards) [[unlikely]] {
-    throw sys::system_error{-EINVAL, sys::generic_category(),
+    throw sys::system_error{EINVAL, sys::generic_category(),
       fmt::format(
 	"{} is not a valid shard. Valid shards are integers in [0, {})",
 	shard_id, num_shards)};
@@ -1845,7 +1845,7 @@ RGWDataChangesLog::trim_entries(const DoutPrefixProvider* dpp,
       fmt::format("No per-zone datalog for zone {}", zone.id)};
   }
   if (shard_id >= num_shards) [[unlikely]] {
-    throw sys::system_error{-EINVAL, sys::generic_category(),
+    throw sys::system_error{EINVAL, sys::generic_category(),
       fmt::format(
 	"{} is not a valid shard. Valid shards are integers in [0, {})",
 	shard_id, num_shards)};
