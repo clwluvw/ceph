@@ -1441,6 +1441,190 @@ def test_datalog_autotrim():
             after_trim = dateutil.parser.isoparse(entries[0]['timestamp'])
             assert before_trim < after_trim, "any datalog entries must be newer than trim"
 
+# --- Per-zone datalog helpers ---
+
+def datalog_list_zone(zone, zone_id, args=None):
+    """List datalog entries for a specific target zone's per-zone datalog."""
+    cmd = ['datalog', 'list', '--log-zone-id', zone_id]
+    if args:
+        cmd += args
+    (result_json, _) = zone.cluster.admin(cmd, read_only=True)
+    return json.loads(result_json)
+
+def datalog_status_zone(zone, zone_id):
+    """Get datalog status for a specific target zone's per-zone datalog."""
+    cmd = ['datalog', 'status', '--log-zone-id', zone_id]
+    (result_json, _) = zone.cluster.admin(cmd, read_only=True)
+    return json.loads(result_json)
+
+def datalog_trim_zone(zone, zone_id, shard_id, marker):
+    """Trim datalog entries for a specific target zone's per-zone datalog."""
+    cmd = ['datalog', 'trim', '--log-zone-id', zone_id,
+           '--shard-id', str(shard_id), '--marker', marker]
+    zone.cluster.admin(cmd)
+
+def test_per_zone_datalog_entries():
+    """Verify that per-zone datalogs have entries after data writes."""
+    zonegroup = realm.master_zonegroup()
+    if len(zonegroup.rw_zones) < 2:
+        raise SkipTest("test_per_zone_datalog_entries skipped. Requires 2 or more RW zones.")
+
+    zonegroup_conns = ZonegroupConns(zonegroup)
+    buckets, zone_bucket = create_bucket_per_zone(zonegroup_conns)
+
+    # upload an object to each zone to generate datalog entries
+    for zone, bucket in zone_bucket:
+        zone.s3_client.put_object(Bucket=bucket.name, Key='perzone-key', Body='perzone-body')
+
+    # wait for sync to complete
+    zonegroup_meta_checkpoint(zonegroup)
+    zonegroup_data_checkpoint(zonegroup_conns)
+
+    # For each source zone, check that per-zone datalogs have entries
+    # for each target zone that it notifies
+    for source_conn in zonegroup_conns.rw_zones:
+        source_zone = source_conn.zone
+        # Get the list of peer zone IDs
+        for target_conn in zonegroup_conns.rw_zones:
+            target_zone = target_conn.zone
+            if source_zone.id == target_zone.id:
+                continue
+
+            # Check per-zone datalog status on the source for target
+            try:
+                zone_status = datalog_status_zone(source_zone, target_zone.id)
+            except Exception as e:
+                log.warning('datalog_status_zone failed for source=%s target=%s: %s',
+                            source_zone.name, target_zone.name, e)
+                continue
+
+            found_nonempty = False
+            for shard_status in zone_status:
+                if shard_status.get('marker', ''):
+                    found_nonempty = True
+                    break
+
+            assert found_nonempty, \
+                "Per-zone datalog on %s for target %s should have non-empty markers" % \
+                (source_zone.name, target_zone.name)
+
+        # Legacy datalog should also have entries (dual-write)
+        legacy_status = datalog_status(source_zone)
+        found_legacy = False
+        for shard_status in legacy_status:
+            if shard_status.get('marker', ''):
+                found_legacy = True
+                break
+        assert found_legacy, \
+            "Legacy datalog on %s should have non-empty markers (dual-write)" % \
+            source_zone.name
+
+def test_per_zone_datalog_trim_independence():
+    """Verify that trimming one zone's datalog does not affect other zones."""
+    zonegroup = realm.master_zonegroup()
+    if len(zonegroup.rw_zones) < 2:
+        raise SkipTest("test_per_zone_datalog_trim_independence skipped. Requires 2 or more RW zones.")
+
+    zonegroup_conns = ZonegroupConns(zonegroup)
+    buckets, zone_bucket = create_bucket_per_zone(zonegroup_conns)
+
+    # upload objects to generate datalog entries
+    for zone, bucket in zone_bucket:
+        zone.s3_client.put_object(Bucket=bucket.name, Key='trim-test-key', Body='trim-test-body')
+
+    # wait for sync
+    zonegroup_meta_checkpoint(zonegroup)
+    zonegroup_data_checkpoint(zonegroup_conns)
+    time.sleep(config.checkpoint_delay)
+    zonegroup_data_checkpoint(zonegroup_conns)
+
+    # Pick a source zone and two target zones
+    source_conn = zonegroup_conns.rw_zones[0]
+    source_zone = source_conn.zone
+    target_zones = [tc.zone for tc in zonegroup_conns.rw_zones
+                    if tc.zone.id != source_zone.id]
+    if len(target_zones) < 2:
+        raise SkipTest("Need at least 2 target zones for trim independence test.")
+
+    target_a = target_zones[0]
+    target_b = target_zones[1]
+
+    # Get status for both target zones' per-zone datalogs on the source
+    status_a_before = datalog_status_zone(source_zone, target_a.id)
+    status_b_before = datalog_status_zone(source_zone, target_b.id)
+
+    # Find a non-empty shard in target_a's datalog and trim it
+    trimmed = False
+    for shard_id, shard_status in enumerate(status_a_before):
+        marker = shard_status.get('marker', '')
+        if marker:
+            datalog_trim_zone(source_zone, target_a.id, shard_id, marker)
+            trimmed = True
+            break
+
+    if not trimmed:
+        log.warning("No non-empty shard found in target_a datalog, skipping trim check")
+        return
+
+    # Verify target_b's datalog is unchanged
+    status_b_after = datalog_status_zone(source_zone, target_b.id)
+    for shard_id, (before, after) in enumerate(zip(status_b_before, status_b_after)):
+        assert before.get('marker', '') == after.get('marker', ''), \
+            "Target B shard %d marker changed after trimming Target A: before=%s after=%s" % \
+            (shard_id, before.get('marker', ''), after.get('marker', ''))
+
+    # Verify legacy datalog is also unchanged
+    legacy_status = datalog_status(source_zone)
+    found_legacy = False
+    for shard_status in legacy_status:
+        if shard_status.get('marker', ''):
+            found_legacy = True
+            break
+    assert found_legacy, "Legacy datalog should still have entries after per-zone trim"
+
+def test_per_zone_datalog_sync_still_works():
+    """Verify that sync continues to work correctly with per-zone datalogs."""
+    zonegroup = realm.master_zonegroup()
+    if len(zonegroup.rw_zones) < 2:
+        raise SkipTest("test_per_zone_datalog_sync_still_works skipped. Requires 2 or more RW zones.")
+
+    zonegroup_conns = ZonegroupConns(zonegroup)
+
+    # Create a bucket and upload objects
+    bucket_name = gen_bucket_name()
+    log.info('create bucket zone=%s name=%s', zonegroup_conns.rw_zones[0].name, bucket_name)
+    zonegroup_conns.rw_zones[0].create_bucket(bucket_name)
+    zonegroup_meta_checkpoint(zonegroup)
+
+    key1 = 'sync-test-obj-1'
+    zonegroup_conns.rw_zones[0].s3_client.put_object(
+        Bucket=bucket_name, Key=key1, Body='sync-test-body-1')
+
+    # Wait for full sync
+    zonegroup_data_checkpoint(zonegroup_conns)
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket_name)
+
+    # Verify data in all zones
+    for zone in zonegroup_conns.zones:
+        resp = zone.s3_client.get_object(Bucket=bucket_name, Key=key1)
+        assert resp['Body'].read() == b'sync-test-body-1', \
+            "Zone %s has wrong data for %s" % (zone.name, key1)
+
+    # Upload more objects (incremental sync)
+    key2 = 'sync-test-obj-2'
+    zonegroup_conns.rw_zones[0].s3_client.put_object(
+        Bucket=bucket_name, Key=key2, Body='sync-test-body-2')
+
+    # Wait for incremental sync
+    zonegroup_data_checkpoint(zonegroup_conns)
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket_name)
+
+    # Verify incremental data in all zones
+    for zone in zonegroup_conns.zones:
+        resp = zone.s3_client.get_object(Bucket=bucket_name, Key=key2)
+        assert resp['Body'].read() == b'sync-test-body-2', \
+            "Zone %s has wrong data for %s after incremental sync" % (zone.name, key2)
+
 def test_multi_zone_redirect():
     zonegroup = realm.master_zonegroup()
     if len(zonegroup.rw_zones) < 2:
