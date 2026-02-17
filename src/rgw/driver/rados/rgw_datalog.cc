@@ -496,6 +496,33 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 		       << dendl;
     return ceph::from_exception(std::current_exception());
   }
+
+  // Initialize per-zone backends in a completely separate co_spawn,
+  // NOT co_awaited from within the main start() coroutine. Adding
+  // any co_await to the main coroutine changes its frame layout and
+  // triggers GCC coroutine code generation bugs (double-free in
+  // string::_M_dispose).
+  if (!target_zone_ids_.empty()) {
+    auto defbacking = to_log_type(
+      cct->_conf.get_val<std::string>("rgw_default_data_log_backing"));
+    ceph_assert(defbacking);
+    try {
+      asio::co_spawn(executor,
+		     init_zone_backends(dpp, *defbacking),
+		     async::use_blocked);
+    } catch (const sys::system_error& e) {
+      ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
+			 << ": Failed to init per-zone backends: "
+			 << e.what() << dendl;
+      return ceph::from_error_code(e.code());
+    } catch (const std::exception& e) {
+      ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
+			 << ": Failed to init per-zone backends: "
+			 << e.what() << dendl;
+      return ceph::from_exception(std::current_exception());
+    }
+  }
+
   return 0;
 }
 
@@ -564,9 +591,11 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 
   // Initialize per-zone backends in a separate coroutine to keep
   // this coroutine's frame close to its original layout.
-  if (!target_zone_ids_.empty()) {
-    co_await init_zone_backends(dpp, *defbacking);
-  }
+  // NOTE: Do NOT co_await init_zone_backends() here! Even as a
+  // separate coroutine, co_awaiting it changes this coroutine's frame
+  // layout enough to trigger GCC coroutine code generation bugs
+  // (double-free in string::_M_dispose). Per-zone init is done via
+  // a separate co_spawn in the 7-param start() sync wrapper instead.
 
   if (!log_data) {
     co_return;
