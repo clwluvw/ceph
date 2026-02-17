@@ -466,8 +466,8 @@ public:
   ~RGWDataChangesLog();
 
   asio::awaitable<void> start(const DoutPrefixProvider* dpp,
-			      const rgw_pool& log_pool,
-			      const std::vector<rgw_zone_id>& target_zone_ids,
+			      rgw_pool log_pool,
+			      std::vector<rgw_zone_id> target_zone_ids,
 			      // Broken out for testing, in use
 			      // they're either all on (radosgw) or
 			      // all off (radosgw-admin)

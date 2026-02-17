@@ -482,7 +482,7 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
     // Blocking in startup code, not ideal, but won't hurt anything.
     asio::co_spawn(executor,
 		   start(dpp, zoneparams.log_pool,
-			 target_zone_ids,
+			 std::move(target_zone_ids),
 			 background_tasks, background_tasks,
 			 background_tasks),
 		   async::use_blocked);
@@ -502,8 +502,8 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 
 asio::awaitable<void>
 RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
-			 const rgw_pool& log_pool,
-			 const std::vector<rgw_zone_id>& target_zone_ids,
+			 rgw_pool log_pool,
+			 std::vector<rgw_zone_id> target_zone_ids,
 			 bool recovery,
 			 bool watch,
 			 bool renew)
