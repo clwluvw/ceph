@@ -563,6 +563,10 @@ public:
 			     std::string, bool>>
   list_entries(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
 	       int shard, int max_entries, std::string marker);
+  asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
+			     RGWDataChangesLogMarker, bool>>
+  list_entries(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
+	       int max_entries, RGWDataChangesLogMarker marker);
   asio::awaitable<RGWDataChangesLogInfo>
   get_info(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
 	   int shard_id);

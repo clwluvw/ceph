@@ -11230,6 +11230,14 @@ next:
 				    max_entries - count, marker),
 	  std::tie(entries, marker, truncated),
 	  &errstr);
+      } else if (opt_log_zone_id) {
+	ret = run_coro(
+	  dpp(),
+	  context_pool,
+	  datalog_svc->list_entries(dpp(), *opt_log_zone_id,
+				    max_entries - count, log_marker),
+	  std::tie(entries, log_marker, truncated),
+	  &errstr);
       } else if (specified_shard_id) {
 	ret = run_coro(
 	  dpp(),

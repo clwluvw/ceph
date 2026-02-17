@@ -1767,6 +1767,48 @@ RGWDataChangesLog::list_entries(const DoutPrefixProvider* dpp,
   co_return std::make_tuple(std::move(entries), std::move(outmark), truncated);
 }
 
+asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
+			   RGWDataChangesLogMarker, bool>>
+RGWDataChangesLog::list_entries(const DoutPrefixProvider* dpp,
+				const rgw_zone_id& zone,
+				int max_entries, RGWDataChangesLogMarker marker)
+{
+  auto it = zone_logs.find(zone);
+  if (it == zone_logs.end()) {
+    throw sys::system_error{
+      ENOENT, sys::generic_category(),
+      fmt::format("No per-zone datalog for zone {}", zone.id)};
+  }
+  if (max_entries <= 0) {
+    co_return std::make_tuple(std::vector<rgw_data_change_log_entry>{},
+			      RGWDataChangesLogMarker{}, false);
+  }
+
+  std::vector<rgw_data_change_log_entry> entries(max_entries);
+  std::span remaining{entries};
+
+  do {
+    std::span<rgw_data_change_log_entry> outspan;
+    std::string outmark;
+    std::tie(outspan, outmark) = co_await it->second.bes->list(
+      dpp, marker.shard, remaining, marker.marker);
+    remaining = remaining.last(remaining.size() - outspan.size());
+    if (!outmark.empty()) {
+      marker.marker = std::move(outmark);
+    } else if (outmark.empty() && marker.shard < (num_shards - 1)) {
+      ++marker.shard;
+      marker.marker.clear();
+    } else {
+      marker.clear();
+    }
+  } while (!remaining.empty() && marker);
+  if (!remaining.empty()) {
+    entries.resize(entries.size() - remaining.size());
+  }
+  bool truncated = marker;
+  co_return std::make_tuple(std::move(entries), std::move(marker), truncated);
+}
+
 asio::awaitable<RGWDataChangesLogInfo>
 RGWDataChangesLog::get_info(const DoutPrefixProvider* dpp,
 			    const rgw_zone_id& zone, int shard_id)
