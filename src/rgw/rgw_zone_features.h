@@ -39,6 +39,7 @@ inline constexpr bool supports(std::string_view feature) {
 inline constexpr std::initializer_list<std::string_view> enabled = {
     resharding,
     notification_v2,
+    per_zone_datalog,
 };
 
 
