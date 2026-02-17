@@ -374,6 +374,7 @@ class RGWDataChangesLog {
   bool log_data = false;
   std::unique_ptr<DataLogBackends> bes; // legacy backend
   std::map<rgw_zone_id, ZoneLog> zone_logs; // per-zone backends
+  std::vector<rgw_zone_id> target_zone_ids_; // zones to create per-zone logs for
   bool is_master_zonegroup_ = false; // only create per-zone logs in master zonegroup
   bool legacy_writes_disabled_ = false; // when per_zone_datalog feature enabled everywhere
 
@@ -466,12 +467,15 @@ public:
   ~RGWDataChangesLog();
 
   asio::awaitable<void> start(const DoutPrefixProvider* dpp,
-			      rgw_pool log_pool,
-			      std::vector<rgw_zone_id> target_zone_ids,
+			      const rgw_pool& log_pool,
 			      // Broken out for testing, in use
 			      // they're either all on (radosgw) or
 			      // all off (radosgw-admin)
 			      bool recovery, bool watch, bool renew);
+  // Separate coroutine for per-zone backend initialization to keep
+  // the main start() coroutine frame close to its original layout.
+  asio::awaitable<void> init_zone_backends(const DoutPrefixProvider* dpp,
+					   log_type defbacking);
 
   int start(const DoutPrefixProvider *dpp, const RGWZone* _zone,
 	    const RGWZoneParams& zoneparams,

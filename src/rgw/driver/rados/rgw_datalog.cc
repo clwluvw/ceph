@@ -458,11 +458,11 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 
   // Only create per-zone logs in master zonegroup (where data originates)
   // AND only when there are actual peer zones to write per-zone logs for
-  std::vector<rgw_zone_id> target_zone_ids;
+  target_zone_ids_.clear();
   if (is_master_zonegroup_ && !notify_zones.empty()) {
-    target_zone_ids.reserve(notify_zones.size());
+    target_zone_ids_.reserve(notify_zones.size());
     for (const auto& [zid, _] : notify_zones) {
-      target_zone_ids.push_back(zid);
+      target_zone_ids_.push_back(zid);
     }
   } else if (!is_master_zonegroup_) {
     ldpp_dout(dpp, 10) << "Not in master zonegroup, skipping per-zone datalog "
@@ -472,8 +472,8 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
   // Only disable legacy writes when per-zone backends will actually be
   // created. Otherwise we'd lose datalog entries entirely.
   legacy_writes_disabled_ = legacy_writes_disabled
-    && !target_zone_ids.empty();
-  if (legacy_writes_disabled && target_zone_ids.empty()) {
+    && !target_zone_ids_.empty();
+  if (legacy_writes_disabled && target_zone_ids_.empty()) {
     ldpp_dout(dpp, 1) << "per_zone_datalog feature enabled but no per-zone "
 		      << "backends to create (not master zonegroup or no "
 		      << "notify zones). Keeping legacy writes active." << dendl;
@@ -482,7 +482,6 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
     // Blocking in startup code, not ideal, but won't hurt anything.
     asio::co_spawn(executor,
 		   start(dpp, zoneparams.log_pool,
-			 std::move(target_zone_ids),
 			 background_tasks, background_tasks,
 			 background_tasks),
 		   async::use_blocked);
@@ -502,8 +501,7 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 
 asio::awaitable<void>
 RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
-			 rgw_pool log_pool,
-			 std::vector<rgw_zone_id> target_zone_ids,
+			 const rgw_pool& log_pool,
 			 bool recovery,
 			 bool watch,
 			 bool renew)
@@ -538,27 +536,10 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
     throw;
   }
 
-  // Initialize per-zone backends
-  for (const auto& zone_id : target_zone_ids) {
-    try {
-      auto zone_bes = co_await logback_generations::init<DataLogBackends>(
-	dpp, *rados, metadata_log_oid(zone_id), loc,
-	[this, zone_id](uint64_t gen_id, int shard) {
-	  return get_oid(zone_id, gen_id, shard);
-	}, num_shards, *defbacking, *this, zone_id);
-      ZoneLog zlog;
-      zlog.zone_id = zone_id;
-      zlog.bes = std::move(zone_bes);
-      zlog.semaphores.resize(num_shards);
-      zone_logs.emplace(zone_id, std::move(zlog));
-      ldpp_dout(dpp, 10) << "Initialized per-zone datalog for zone "
-			 << zone_id << dendl;
-    } catch (const std::exception& e) {
-      ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
-			 << ": Error initializing per-zone backend for zone "
-			 << zone_id << ": " << e.what() << dendl;
-      throw;
-    }
+  // Initialize per-zone backends in a separate coroutine to keep
+  // this coroutine's frame close to its original layout.
+  if (!target_zone_ids_.empty()) {
+    co_await init_zone_backends(dpp, *defbacking);
   }
 
   if (!log_data) {
@@ -597,6 +578,34 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
       asio::bind_cancellation_slot(recovery_signal.slot(),
 				   asio::bind_executor(recovery_strand,
 						       asio::use_future)));
+  }
+  co_return;
+}
+
+asio::awaitable<void>
+RGWDataChangesLog::init_zone_backends(const DoutPrefixProvider *dpp,
+				      log_type defbacking)
+{
+  for (const auto& zone_id : target_zone_ids_) {
+    try {
+      auto zone_bes = co_await logback_generations::init<DataLogBackends>(
+	dpp, *rados, metadata_log_oid(zone_id), loc,
+	[this, zone_id](uint64_t gen_id, int shard) {
+	  return get_oid(zone_id, gen_id, shard);
+	}, num_shards, defbacking, *this, zone_id);
+      ZoneLog zlog;
+      zlog.zone_id = zone_id;
+      zlog.bes = std::move(zone_bes);
+      zlog.semaphores.resize(num_shards);
+      zone_logs.emplace(zone_id, std::move(zlog));
+      ldpp_dout(dpp, 10) << "Initialized per-zone datalog for zone "
+			 << zone_id << dendl;
+    } catch (const std::exception& e) {
+      ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
+			 << ": Error initializing per-zone backend for zone "
+			 << zone_id << ": " << e.what() << dendl;
+      throw;
+    }
   }
   co_return;
 }

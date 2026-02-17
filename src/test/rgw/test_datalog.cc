@@ -273,7 +273,7 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), {},
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
 			    false, true, false);
     co_return std::move(datalog);
   }
@@ -284,7 +284,7 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), {},
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
 			    false, false, false);
     co_return std::move(datalog);
   }
@@ -297,7 +297,7 @@ private:
     // can test iterated increment/decrement/list code.
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados(), 1, 7);
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), {},
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
 			    false, true, false);
     co_return std::move(datalog);
   }
@@ -545,8 +545,8 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    std::vector<rgw_zone_id> target_zones = {zone_a, zone_b};
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), target_zones,
+    datalog->target_zone_ids_ = {zone_a, zone_b};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
 			    false, true, false);
     co_return std::move(datalog);
   }
@@ -772,8 +772,8 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    std::vector<rgw_zone_id> target_zones = {zone_a, zone_b};
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), target_zones,
+    datalog->target_zone_ids_ = {zone_a, zone_b};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
 			    false, true, false);
     co_return std::move(datalog);
   }
