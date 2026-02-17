@@ -36,10 +36,12 @@ inline constexpr bool supports(std::string_view feature) {
 }
 
 // static list of features enabled by default on new zonegroups
+// NOTE: per_zone_datalog is intentionally NOT enabled by default yet.
+// It must be explicitly enabled via `radosgw-admin zonegroup modify
+// --enable-feature=per_zone_datalog` after all zones support it.
 inline constexpr std::initializer_list<std::string_view> enabled = {
     resharding,
     notification_v2,
-    per_zone_datalog,
 };
 
 
