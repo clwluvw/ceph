@@ -1,6 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
 // vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
+#include <atomic>
 #include <exception>
 #include <ranges>
 #include <shared_mutex> // for std::shared_lock
@@ -454,18 +455,28 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 {
   log_data = zone->log_data;
   is_master_zonegroup_ = zonegroup.is_master_zonegroup();
-  legacy_writes_disabled_ = legacy_writes_disabled;
 
   // Only create per-zone logs in master zonegroup (where data originates)
+  // AND only when there are actual peer zones to write per-zone logs for
   std::vector<rgw_zone_id> target_zone_ids;
-  if (is_master_zonegroup_) {
+  if (is_master_zonegroup_ && !notify_zones.empty()) {
     target_zone_ids.reserve(notify_zones.size());
     for (const auto& [zid, _] : notify_zones) {
       target_zone_ids.push_back(zid);
     }
-  } else {
+  } else if (!is_master_zonegroup_) {
     ldpp_dout(dpp, 10) << "Not in master zonegroup, skipping per-zone datalog "
 		       << "initialization" << dendl;
+  }
+
+  // Only disable legacy writes when per-zone backends will actually be
+  // created. Otherwise we'd lose datalog entries entirely.
+  legacy_writes_disabled_ = legacy_writes_disabled
+    && !target_zone_ids.empty();
+  if (legacy_writes_disabled && target_zone_ids.empty()) {
+    ldpp_dout(dpp, 1) << "per_zone_datalog feature enabled but no per-zone "
+		      << "backends to create (not master zonegroup or no "
+		      << "notify zones). Keeping legacy writes active." << dendl;
   }
   try {
     // Blocking in startup code, not ideal, but won't hurt anything.
@@ -837,7 +848,7 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
     }
   }
 
-  auto push_failed = false;
+  std::atomic<bool> push_failed{false};
 
   // Push to all backends in parallel using spawn_group
   {
@@ -853,7 +864,7 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
 	  try {
 	    co_await be->push(dpp, index, std::move(shard_entries));
 	  } catch (const std::exception& e) {
-	    push_failed = true;
+	    push_failed.store(true, std::memory_order_relaxed);
 	    ldpp_dout(dpp, 5) << "RGWDataChangesLog::renew_entries(): "
 			      << "Legacy push failed: " << e.what() << dendl;
 	  }
@@ -871,7 +882,7 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
 	  try {
 	    co_await zone_be->push(dpp, index, std::move(shard_entries));
 	  } catch (const std::exception& e) {
-	    push_failed = true;
+	    push_failed.store(true, std::memory_order_relaxed);
 	    ldpp_dout(dpp, 5) << "RGWDataChangesLog::renew_entries(): "
 			      << "Per-zone push failed for zone " << zid
 			      << ": " << e.what() << dendl;
