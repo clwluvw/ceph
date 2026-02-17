@@ -184,6 +184,68 @@ protected:
     datalog->semaphores[datalog->choose_oid(bg.shard)].insert(bg.get_key());
   }
 
+  // Per-zone helpers (friendship doesn't inherit, so derived classes
+  // must use these base-class methods to access private members)
+  void add_to_zone_semaphores(const rgw_zone_id& zone, const BucketGen& bg) {
+    std::unique_lock l(datalog->lock);
+    auto it = datalog->zone_logs.find(zone);
+    if (it != datalog->zone_logs.end()) {
+      it->second.semaphores[datalog->choose_oid(bg.shard)].insert(bg.get_key());
+    }
+  }
+
+  auto zone_sem_set_oid(const rgw_zone_id& zone, const BucketGen& bg) {
+    return datalog->get_sem_set_oid(zone, datalog->choose_oid(bg.shard));
+  }
+
+  void set_legacy_writes_disabled(bool val) {
+    datalog->legacy_writes_disabled_ = val;
+  }
+
+  asio::awaitable<bc::flat_map<std::string, uint64_t>>
+  read_all_zone_sems(const rgw_zone_id& zone) {
+    bc::flat_map<std::string, uint64_t> all_sems;
+    for (auto i = 0; i < datalog->num_shards; ++i) {
+      std::string cursor;
+      do {
+	try {
+	  co_await rados().execute(
+	    datalog->get_sem_set_oid(zone, i), datalog->loc,
+	    neorados::ReadOp{}.exec(ss::list(datalog->sem_max_keys, cursor,
+					     &all_sems, &cursor)),
+	    nullptr, asio::use_awaitable);
+	} catch (const sys::system_error& e) {
+	  if (e.code() == sys::errc::no_such_file_or_directory) {
+	    break;
+	  } else {
+	    throw;
+	  }
+	}
+      } while (!cursor.empty());
+    }
+    co_return std::move(all_sems);
+  }
+
+  asio::awaitable<bc::flat_map<BucketGen, uint64_t>>
+  read_all_zone_log(const DoutPrefixProvider* dpp, const rgw_zone_id& zone) {
+    bc::flat_map<BucketGen, uint64_t> all_keys;
+    for (auto shard = 0; shard < datalog->num_shards; ++shard) {
+      std::string marker;
+      bool truncated = true;
+      while (truncated) {
+	auto [entries, outmarker, trunc] =
+	  co_await datalog->list_entries(dpp, zone, shard, 1'000, marker);
+	truncated = trunc;
+	marker = std::move(outmarker);
+	for (const auto& entry : entries) {
+	  auto key = fmt::format("{}:{}", entry.entry.key, entry.entry.gen);
+	  all_keys[BucketGen{key}] += 1;
+	}
+      }
+    }
+    co_return std::move(all_keys);
+  }
+
 public:
 
   /// \brief Create RADOS handle and pool for the test
@@ -488,65 +550,6 @@ private:
 			    false, true, false);
     co_return std::move(datalog);
   }
-
-protected:
-  // Read all log entries from a specific zone's datalog
-  asio::awaitable<bc::flat_map<BucketGen, uint64_t>>
-  read_all_zone_log(const DoutPrefixProvider* dpp, const rgw_zone_id& zone) {
-    bc::flat_map<BucketGen, uint64_t> all_keys;
-    for (auto shard = 0; shard < datalog->num_shards; ++shard) {
-      std::string marker;
-      bool truncated = true;
-      while (truncated) {
-	auto [entries, outmarker, trunc] =
-	  co_await datalog->list_entries(dpp, zone, shard, 1'000, marker);
-	truncated = trunc;
-	marker = std::move(outmarker);
-	for (const auto& entry : entries) {
-	  auto key = fmt::format("{}:{}", entry.entry.key, entry.entry.gen);
-	  all_keys[BucketGen{key}] += 1;
-	}
-      }
-    }
-    co_return std::move(all_keys);
-  }
-
-  // Read semaphores from a zone's sem_set OID
-  asio::awaitable<bc::flat_map<std::string, uint64_t>>
-  read_all_zone_sems(const rgw_zone_id& zone) {
-    bc::flat_map<std::string, uint64_t> all_sems;
-    for (auto i = 0; i < datalog->num_shards; ++i) {
-      std::string cursor;
-      do {
-	try {
-	  co_await rados().execute(
-	    datalog->get_sem_set_oid(zone, i), datalog->loc,
-	    neorados::ReadOp{}.exec(ss::list(datalog->sem_max_keys, cursor,
-					     &all_sems, &cursor)),
-	    nullptr, asio::use_awaitable);
-	} catch (const sys::system_error& e) {
-	  if (e.code() == sys::errc::no_such_file_or_directory) {
-	    break;
-	  } else {
-	    throw;
-	  }
-	}
-      } while (!cursor.empty());
-    }
-    co_return std::move(all_sems);
-  }
-
-  auto zone_sem_set_oid(const rgw_zone_id& zone, const BucketGen& bg) {
-    return datalog->get_sem_set_oid(zone, datalog->choose_oid(bg.shard));
-  }
-
-  void add_to_zone_semaphores(const rgw_zone_id& zone, const BucketGen& bg) {
-    std::unique_lock l(datalog->lock);
-    auto it = datalog->zone_logs.find(zone);
-    if (it != datalog->zone_logs.end()) {
-      it->second.semaphores[datalog->choose_oid(bg.shard)].insert(bg.get_key());
-    }
-  }
 };
 
 // Verify that get_zone_ids() returns the configured zones
@@ -772,30 +775,14 @@ private:
     std::vector<rgw_zone_id> target_zones = {zone_a, zone_b};
     co_await datalog->start(dpp(), rgw_pool(pool_name()), target_zones,
 			    false, true, false);
-    // Simulate per_zone_datalog feature enabled
-    datalog->legacy_writes_disabled_ = true;
     co_return std::move(datalog);
   }
 
-protected:
-  asio::awaitable<bc::flat_map<BucketGen, uint64_t>>
-  read_all_zone_log(const DoutPrefixProvider* dpp, const rgw_zone_id& zone) {
-    bc::flat_map<BucketGen, uint64_t> all_keys;
-    for (auto shard = 0; shard < datalog->num_shards; ++shard) {
-      std::string marker;
-      bool truncated = true;
-      while (truncated) {
-	auto [entries, outmarker, trunc] =
-	  co_await datalog->list_entries(dpp, zone, shard, 1'000, marker);
-	truncated = trunc;
-	marker = std::move(outmarker);
-	for (const auto& entry : entries) {
-	  auto key = fmt::format("{}:{}", entry.entry.key, entry.entry.gen);
-	  all_keys[BucketGen{key}] += 1;
-	}
-      }
-    }
-    co_return std::move(all_keys);
+  // Called after base CoSetUp creates the datalog
+  asio::awaitable<void> CoSetUp() override {
+    co_await DataLogTestBase::CoSetUp();
+    // Simulate per_zone_datalog feature enabled
+    set_legacy_writes_disabled(true);
   }
 };
 
