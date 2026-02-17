@@ -51,6 +51,8 @@
 
 #include "common/async/spawn_group.h"
 
+class RGWRESTConn;
+
 namespace asio = boost::asio;
 namespace bc = boost::container;
 
