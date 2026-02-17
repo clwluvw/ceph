@@ -497,19 +497,16 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
     return ceph::from_exception(std::current_exception());
   }
 
-  // Initialize per-zone backends in a completely separate co_spawn,
-  // NOT co_awaited from within the main start() coroutine. Adding
-  // any co_await to the main coroutine changes its frame layout and
-  // triggers GCC coroutine code generation bugs (double-free in
-  // string::_M_dispose).
+  // Initialize per-zone backends after the main coroutine completes.
+  // This is a regular function call (not a coroutine) to avoid GCC
+  // coroutine code generation bugs that cause double-free in
+  // string::_M_dispose().
   if (!target_zone_ids_.empty()) {
     auto defbacking = to_log_type(
       cct->_conf.get_val<std::string>("rgw_default_data_log_backing"));
     ceph_assert(defbacking);
     try {
-      asio::co_spawn(executor,
-		     init_zone_backends(dpp, *defbacking),
-		     async::use_blocked);
+      init_zone_backends(dpp, *defbacking);
     } catch (const sys::system_error& e) {
       ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
 			 << ": Failed to init per-zone backends: "
@@ -589,13 +586,9 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
     throw;
   }
 
-  // Initialize per-zone backends in a separate coroutine to keep
-  // this coroutine's frame close to its original layout.
-  // NOTE: Do NOT co_await init_zone_backends() here! Even as a
-  // separate coroutine, co_awaiting it changes this coroutine's frame
-  // layout enough to trigger GCC coroutine code generation bugs
-  // (double-free in string::_M_dispose). Per-zone init is done via
-  // a separate co_spawn in the 7-param start() sync wrapper instead.
+  // NOTE: per-zone backend init is done in the 7-param start() sync
+  // wrapper via init_zone_backends(), not here. Adding any co_await
+  // to this coroutine triggers GCC coroutine frame corruption.
 
   if (!log_data) {
     co_return;
@@ -637,32 +630,30 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
   co_return;
 }
 
-asio::awaitable<void>
+void
 RGWDataChangesLog::init_zone_backends(const DoutPrefixProvider *dpp,
 				      log_type defbacking)
 {
+  // Initialize each zone's backends via individual co_spawn calls
+  // rather than a single coroutine with a loop. This avoids GCC
+  // coroutine code generation bugs that corrupt the coroutine frame
+  // and cause double-free in string::_M_dispose().
   for (const auto& zone_id : target_zone_ids_) {
-    try {
-      auto zone_bes = co_await logback_generations::init<DataLogBackends>(
+    auto zone_bes = asio::co_spawn(executor,
+      logback_generations::init<DataLogBackends>(
 	dpp, *rados, metadata_log_oid(zone_id), loc,
 	[this, zone_id](uint64_t gen_id, int shard) {
 	  return get_oid(zone_id, gen_id, shard);
-	}, num_shards, defbacking, *this, zone_id);
-      ZoneLog zlog;
-      zlog.zone_id = zone_id;
-      zlog.bes = std::move(zone_bes);
-      zlog.semaphores.resize(num_shards);
-      zone_logs.emplace(zone_id, std::move(zlog));
-      ldpp_dout(dpp, 10) << "Initialized per-zone datalog for zone "
-			 << zone_id << dendl;
-    } catch (const std::exception& e) {
-      ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
-			 << ": Error initializing per-zone backend for zone "
-			 << zone_id << ": " << e.what() << dendl;
-      throw;
-    }
+	}, num_shards, defbacking, *this, zone_id),
+      async::use_blocked);
+    ZoneLog zlog;
+    zlog.zone_id = zone_id;
+    zlog.bes = std::move(zone_bes);
+    zlog.semaphores.resize(num_shards);
+    zone_logs.emplace(zone_id, std::move(zlog));
+    ldpp_dout(dpp, 10) << "Initialized per-zone datalog for zone "
+		       << zone_id << dendl;
   }
-  co_return;
 }
 
 asio::awaitable<bool>

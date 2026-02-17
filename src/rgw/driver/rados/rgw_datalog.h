@@ -472,10 +472,10 @@ public:
 			      // they're either all on (radosgw) or
 			      // all off (radosgw-admin)
 			      bool recovery, bool watch, bool renew);
-  // Separate coroutine for per-zone backend initialization to keep
-  // the main start() coroutine frame close to its original layout.
-  asio::awaitable<void> init_zone_backends(const DoutPrefixProvider* dpp,
-					   log_type defbacking);
+  // Non-coroutine per-zone backend initialization. Uses individual
+  // co_spawn calls per zone to avoid GCC coroutine frame corruption.
+  void init_zone_backends(const DoutPrefixProvider* dpp,
+			  log_type defbacking);
 
   int start(const DoutPrefixProvider *dpp, const RGWZone* _zone,
 	    const RGWZoneParams& zoneparams,
