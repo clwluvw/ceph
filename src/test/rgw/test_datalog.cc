@@ -14,6 +14,7 @@
  */
 
 #include "rgw_datalog.h"
+#include "rgw_log_backing.h"
 
 #include <string_view>
 
@@ -200,6 +201,37 @@ protected:
 
   void set_legacy_writes_disabled(bool val) {
     datalog->legacy_writes_disabled_ = val;
+  }
+
+  // Set target zone IDs for per-zone datalog testing (accesses private
+  // member via DataLogTestBase friendship with RGWDataChangesLog)
+  static void set_target_zone_ids(RGWDataChangesLog& dl,
+				  std::vector<rgw_zone_id> ids) {
+    dl.target_zone_ids_ = std::move(ids);
+  }
+
+  // Initialize per-zone backends in a test coroutine context.
+  // Unlike the production init_zone_backends() which uses
+  // async::use_blocked (and would deadlock inside a coroutine on the
+  // same executor), this version uses co_await directly.
+  static asio::awaitable<void>
+  init_test_zone_backends(const DoutPrefixProvider* dpp_,
+			  RGWDataChangesLog& dl) {
+    auto defbacking = to_log_type(
+      dl.cct->_conf.get_val<std::string>("rgw_default_data_log_backing"));
+    ceph_assert(defbacking);
+    for (const auto& zone_id : dl.target_zone_ids_) {
+      auto zone_bes = co_await logback_generations::init<DataLogBackends>(
+	dpp_, *dl.rados, dl.metadata_log_oid(zone_id), dl.loc,
+	[&dl, zone_id](uint64_t gen_id, int shard) {
+	  return dl.get_oid(zone_id, gen_id, shard);
+	}, dl.num_shards, *defbacking, dl, zone_id);
+      ZoneLog zlog;
+      zlog.zone_id = zone_id;
+      zlog.bes = std::move(zone_bes);
+      zlog.semaphores.resize(dl.num_shards);
+      dl.zone_logs.emplace(zone_id, std::move(zlog));
+    }
   }
 
   asio::awaitable<bc::flat_map<std::string, uint64_t>>
@@ -545,9 +577,10 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    datalog->target_zone_ids_ = {zone_a, zone_b};
+    set_target_zone_ids(*datalog, {zone_a, zone_b});
     co_await datalog->start(dpp(), rgw_pool(pool_name()),
 			    false, true, false);
+    co_await init_test_zone_backends(dpp(), *datalog);
     co_return std::move(datalog);
   }
 };
@@ -772,9 +805,10 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    datalog->target_zone_ids_ = {zone_a, zone_b};
+    set_target_zone_ids(*datalog, {zone_a, zone_b});
     co_await datalog->start(dpp(), rgw_pool(pool_name()),
 			    false, true, false);
+    co_await init_test_zone_backends(dpp(), *datalog);
     co_return std::move(datalog);
   }
 
