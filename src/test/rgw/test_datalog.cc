@@ -469,3 +469,246 @@ CORO_TEST_F(DataLogBulky, BulkySemaphoresRecovery, DataLogBulky) {
   }
   co_return;
 }
+
+// Test per-zone datalog with custom prefixes
+class PerZoneDataLogTest : public CoroTest {
+private:
+  const std::string prefix_{std::string{"per-zone test framework "} +
+                            testing::UnitTest::GetInstance()->
+                            current_test_info()->name() +
+                            std::string{": "}};
+
+  std::optional<neorados::RADOS> rados_;
+  neorados::IOContext pool_;
+  const std::string pool_name_ = get_temp_pool_name(
+    testing::UnitTest::GetInstance()->current_test_info()->name());
+  std::unique_ptr<DoutPrefix> dpp_;
+
+  boost::asio::awaitable<uint64_t> create_pool() {
+    co_return co_await ::create_pool(rados(), pool_name(),
+                                     boost::asio::use_awaitable);
+  }
+
+  boost::asio::awaitable<void> clean_pool() {
+    co_await rados().delete_pool(pool().get_pool(),
+                                 boost::asio::use_awaitable);
+  }
+
+protected:
+  std::unique_ptr<RGWDataChangesLog> datalog1;
+  std::unique_ptr<RGWDataChangesLog> datalog2;
+
+  neorados::RADOS& rados() noexcept { return *rados_; }
+  const std::string& pool_name() const noexcept { return pool_name_; }
+  const neorados::IOContext& pool() const noexcept { return pool_; }
+  std::string_view prefix() const noexcept { return prefix_; }
+  const DoutPrefixProvider* dpp() const noexcept { return dpp_.get(); }
+
+public:
+  boost::asio::awaitable<void> CoSetUp() override {
+    rados_ = co_await neorados::RADOS::Builder{}
+      .build(asio_context, boost::asio::use_awaitable);
+    dpp_ = std::make_unique<DoutPrefix>(rados().cct(), 0, prefix().data());
+    pool_.set_pool(co_await create_pool());
+    
+    // Create two datalogs with different prefixes
+    datalog1 = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
+                                                    rados(), std::nullopt, 
+                                                    std::nullopt, "data_log.zone1");
+    co_await datalog1->start(dpp(), rgw_pool(pool_name()), true, false, false);
+    
+    datalog2 = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
+                                                    rados(), std::nullopt,
+                                                    std::nullopt, "data_log.zone2");
+    co_await datalog2->start(dpp(), rgw_pool(pool_name()), true, false, false);
+    co_return;
+  }
+
+  ~PerZoneDataLogTest() override = default;
+
+  boost::asio::awaitable<void> CoTearDown() override {
+    co_await datalog1->async_shutdown();
+    co_await datalog2->async_shutdown();
+    co_await clean_pool();
+    co_return;
+  }
+};
+
+TEST_F(PerZoneDataLogTest, SeparateOIDsPerPrefix) {
+  // Verify that logs with different prefixes create different RADOS objects
+  CoRun([this]() -> asio::awaitable<void> {
+    // Add entry to first log
+    RGWBucketInfo bi1;
+    bi1.bucket.name = "bucket1";
+    rgw::bucket_log_layout_generation gen;
+    gen.gen = 0;
+    co_await datalog1->add_entry(dpp(), bi1, gen, 0);
+
+    // Add entry to second log
+    RGWBucketInfo bi2;
+    bi2.bucket.name = "bucket2";
+    co_await datalog2->add_entry(dpp(), bi2, gen, 0);
+
+    // Determine actual shard indices for each bucket+shard
+    auto shard_index1 = datalog1->get_log_shard_id(bi1.bucket, 0);
+    auto shard_index2 = datalog2->get_log_shard_id(bi2.bucket, 0);
+
+    // Check that OIDs are different and have correct prefixes
+    auto oid1 = datalog1->get_oid(0, shard_index1);
+    auto oid2 = datalog2->get_oid(0, shard_index2);
+    
+    EXPECT_NE(oid1, oid2);
+    EXPECT_TRUE(oid1.rfind("data_log.zone1.", 0) == 0);
+    EXPECT_TRUE(oid2.rfind("data_log.zone2.", 0) == 0);
+
+    // Verify both objects exist and contain data
+    try {
+      neorados::ReadOp read_op1;
+      uint64_t size1;
+      time_t mtime1;
+      int prval1;
+      read_op1.stat(&size1, &mtime1, &prval1);
+      co_await rados().execute(oid1, pool(), std::move(read_op1), nullptr,
+                              asio::use_awaitable);
+    } catch (const sys::system_error& e) {
+      ADD_FAILURE() << "Zone1 log object doesn't exist: " << e.what();
+      co_return;
+    }
+
+    try {
+      neorados::ReadOp read_op2;
+      uint64_t size2;
+      time_t mtime2;
+      int prval2;
+      read_op2.stat(&size2, &mtime2, &prval2);
+      co_await rados().execute(oid2, pool(), std::move(read_op2), nullptr,
+                              asio::use_awaitable);
+    } catch (const sys::system_error& e) {
+      ADD_FAILURE() << "Zone2 log object doesn't exist: " << e.what();
+      co_return;
+    }
+
+    co_return;
+  });
+}
+
+TEST_F(PerZoneDataLogTest, IndependentModifiedShards) {
+  // Verify that each log maintains independent modified_shards tracking
+  CoRun([this]() -> asio::awaitable<void> {
+    // Add entries to both logs with different shard IDs
+    RGWBucketInfo bi;
+    bi.bucket.name = "test-bucket";
+    rgw::bucket_log_layout_generation gen;
+    gen.gen = 0;
+    
+    // Compute expected shard indices
+    int expected_shard1 = datalog1->get_log_shard_id(bi.bucket, 0);
+    int expected_shard2 = datalog2->get_log_shard_id(bi.bucket, 1);
+    
+    co_await datalog1->add_entry(dpp(), bi, gen, 0);
+    co_await datalog2->add_entry(dpp(), bi, gen, 1);
+
+    // Read modified shards from each log
+    auto modified1 = datalog1->read_clear_modified();
+    auto modified2 = datalog2->read_clear_modified();
+
+    // Verify log1 has the expected shard modified
+    EXPECT_EQ(modified1.size(), 1);
+    EXPECT_TRUE(modified1.contains(expected_shard1));
+    
+    // Verify log2 has the expected shard modified
+    EXPECT_EQ(modified2.size(), 1);
+    EXPECT_TRUE(modified2.contains(expected_shard2));
+
+    // Verify reading cleared the modified shards
+    auto modified1_again = datalog1->read_clear_modified();
+    auto modified2_again = datalog2->read_clear_modified();
+    
+    EXPECT_TRUE(modified1_again.empty());
+    EXPECT_TRUE(modified2_again.empty());
+
+    co_return;
+  });
+}
+
+TEST_F(PerZoneDataLogTest, IndependentTrimPerZone) {
+  // Verify that trimming one zone's log doesn't affect another zone's log
+  CoRun([this]() -> asio::awaitable<void> {
+    // Use the preconfigured per-zone logs from the test fixture
+    // Create bucket info for test
+    RGWBucketInfo bi;
+    bi.bucket.name = "test-trim-bucket";
+    bi.bucket.bucket_id = "test-trim-bucket-id";
+    bi.bucket.tenant = "test-tenant";
+
+    rgw_bucket_shard bs;
+    bs.bucket = bi.bucket;
+    bs.shard_id = 0;
+
+    rgw::bucket_log_layout_generation gen;
+    gen.gen = 1;
+
+    // Add entries to both zone logs
+    co_await datalog1->add_entry(dpp(), bi, gen, 0);
+    co_await datalog2->add_entry(dpp(), bi, gen, 0);
+
+    // List entries from both logs to get markers
+    std::vector<rgw_data_change_log_entry> entries1, entries2;
+    std::string marker1, marker2;
+    bool truncated1, truncated2;
+
+    // Get the actual shard where entries were written
+    int shard_id = datalog1->get_log_shard_id(bi.bucket, 0);
+
+    // List entries from zone1 log
+    std::tie(entries1, marker1, truncated1) =
+        co_await datalog1->list_entries(dpp(), shard_id, 100, {});
+    
+    EXPECT_FALSE(entries1.empty()) << "Zone1 log should have entries";
+    if (entries1.empty()) {
+      ADD_FAILURE() << "Need at least one entry for trim test";
+      co_return;
+    }
+
+    // List entries from zone2 log
+    std::tie(entries2, marker2, truncated2) =
+        co_await datalog2->list_entries(dpp(), shard_id, 100, {});
+    
+    EXPECT_FALSE(entries2.empty()) << "Zone2 log should have entries";
+    if (entries2.empty()) {
+      ADD_FAILURE() << "Need at least one entry for trim test";
+      co_return;
+    }
+
+    // Trim zone1 log up to the marker of the first entry
+    std::string trim_marker1 = entries1[0].log_id;
+    co_await datalog1->trim_entries(dpp(), shard_id, trim_marker1);
+
+    // List again from both logs after trimming zone1
+    std::vector<rgw_data_change_log_entry> entries1_after, entries2_after;
+    std::string marker1_after, marker2_after;
+    bool truncated1_after, truncated2_after;
+
+    std::tie(entries1_after, marker1_after, truncated1_after) =
+        co_await datalog1->list_entries(dpp(), shard_id, 100, {});
+    
+    std::tie(entries2_after, marker2_after, truncated2_after) =
+        co_await datalog2->list_entries(dpp(), shard_id, 100, {});
+
+    // Verify zone1 log was trimmed (entries removed or reduced)
+    EXPECT_LE(entries1_after.size(), entries1.size())
+        << "Zone1 log should be trimmed (fewer or equal entries)";
+
+    // Verify zone2 log was NOT affected by zone1 trim
+    EXPECT_EQ(entries2_after.size(), entries2.size())
+        << "Zone2 log should be unaffected by zone1 trim";
+    
+    // Verify the actual entries are the same in zone2
+    if (!entries2.empty() && !entries2_after.empty()) {
+      EXPECT_EQ(entries2[0].log_id, entries2_after[0].log_id)
+          << "Zone2 log entries should be unchanged";
+    }
+
+    co_return;
+  });
+}

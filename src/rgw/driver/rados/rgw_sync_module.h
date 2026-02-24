@@ -49,6 +49,7 @@ class RGWSI_BucketIndex;
 class RGWSI_Zone;
 class RGWBucketCtl;
 class RGWDataChangesLog;
+class RGWDataChangesLogManager;
 
 class RGWSyncModuleInstance {
 public:
@@ -69,7 +70,7 @@ public:
                                                   RGWSI_Zone* svc_zone,
                                                   RGWSI_Bucket* svc_bucket,
                                                   RGWSI_BucketIndex* svc_bi,
-                                                  RGWDataChangesLog *svc_datalog)
+                                                  RGWDataChangesLogManager *svc_datalog)
       -> std::unique_ptr<RGWMetadataHandler>;
 
   // indication whether the sync module start with full sync (default behavior)

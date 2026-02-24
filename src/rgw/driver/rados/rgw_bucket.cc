@@ -2844,7 +2844,7 @@ class RGWBucketInstanceMetadataHandler : public RGWMetadataHandler {
   RGWSI_Zone* svc_zone{nullptr};
   RGWSI_Bucket* svc_bucket{nullptr};
   RGWSI_BucketIndex* svc_bi{nullptr};
-  RGWDataChangesLog *svc_datalog{nullptr};
+  RGWDataChangesLogManager *svc_datalog{nullptr};
 
   int put_prepare(const DoutPrefixProvider* dpp, optional_yield y,
                   const std::string& entry, RGWBucketCompleteInfo& bci,
@@ -2860,7 +2860,7 @@ class RGWBucketInstanceMetadataHandler : public RGWMetadataHandler {
                                    RGWSI_Zone* svc_zone,
                                    RGWSI_Bucket* svc_bucket,
                                    RGWSI_BucketIndex* svc_bi,
-                                   RGWDataChangesLog *svc_datalog)
+                                   RGWDataChangesLogManager *svc_datalog)
     : driver(driver), svc_zone(svc_zone),
       svc_bucket(svc_bucket), svc_bi(svc_bi), svc_datalog(svc_datalog) {}
 
@@ -3698,7 +3698,7 @@ auto create_bucket_instance_metadata_handler(rgw::sal::Driver* driver,
                                              RGWSI_Zone* svc_zone,
                                              RGWSI_Bucket* svc_bucket,
                                              RGWSI_BucketIndex* svc_bi,
-                                             RGWDataChangesLog *svc_datalog)
+                                             RGWDataChangesLogManager *svc_datalog)
     -> std::unique_ptr<RGWMetadataHandler>
 {
   return std::make_unique<RGWBucketInstanceMetadataHandler>(driver, svc_zone,
@@ -3719,7 +3719,7 @@ auto create_archive_bucket_instance_metadata_handler(rgw::sal::Driver* driver,
                                                      RGWSI_Zone* svc_zone,
                                                      RGWSI_Bucket* svc_bucket,
                                                      RGWSI_BucketIndex* svc_bi,
-                                                     RGWDataChangesLog *svc_datalog)
+                                                     RGWDataChangesLogManager *svc_datalog)
     -> std::unique_ptr<RGWMetadataHandler>
 {
   return std::make_unique<RGWArchiveBucketInstanceMetadataHandler>(driver, svc_zone,

@@ -28,6 +28,7 @@
 
 #include "common/dout.h"
 #include "common/containers.h"
+#include "common/errno.h"
 #include "common/error_code.h"
 
 #include "neorados/cls/fifo.h"
@@ -358,21 +359,23 @@ public:
   }
 };
 
-RGWDataChangesLog::RGWDataChangesLog(rgw::sal::RadosStore* driver)
+RGWDataChangesLog::RGWDataChangesLog(rgw::sal::RadosStore* driver,
+				     std::optional<std::string> prefix)
   : cct(driver->ctx()), rados(driver->get_neorados()),
     executor(driver->get_io_context().get_executor()),
     num_shards(cct->_conf->rgw_data_log_num_shards),
-    prefix(get_prefix()),
+    prefix(prefix ? *prefix : get_prefix()),
     changes(cct->_conf->rgw_data_log_changes_size) {}
 
 RGWDataChangesLog::RGWDataChangesLog(CephContext *cct, bool log_data,
                                      neorados::RADOS rados,
                                      std::optional<int> num_shards,
-                                     std::optional<uint64_t> sem_max_keys)
+                                     std::optional<uint64_t> sem_max_keys,
+				     std::optional<std::string> prefix)
   : cct(cct), rados(rados), log_data(log_data), executor(rados.get_executor()), 
       num_shards(num_shards ? *num_shards :
 		 cct->_conf->rgw_data_log_num_shards),
-      prefix(get_prefix()), changes(cct->_conf->rgw_data_log_changes_size),
+      prefix(prefix ? *prefix : get_prefix()), changes(cct->_conf->rgw_data_log_changes_size),
       sem_max_keys(sem_max_keys ? *sem_max_keys : ss::max_keys) {}
 
 
@@ -1763,4 +1766,489 @@ void RGWDataChangesLogInfo::decode_json(JSONObj *obj)
 {
   JSONDecoder::decode_json("marker", marker, obj);
   JSONDecoder::decode_json("last_update", last_update, obj);
+}
+
+// RGWDataChangesLogManager implementation
+
+int RGWDataChangesLogManager::init(const DoutPrefixProvider* dpp,
+                                   rgw::sal::RadosStore* driver,
+                                   const RGWZone* zone,
+                                   const RGWZoneParams& zoneparams,
+                                   const std::map<rgw_zone_id, RGWRESTConn*>& target_zones,
+                                   bool background_tasks)
+{
+  this->driver = driver;
+
+  // Create and start legacy log (no custom prefix)
+  legacy_log = std::make_unique<RGWDataChangesLog>(driver);
+  int r = legacy_log->start(dpp, zone, zoneparams, background_tasks);
+  if (r < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to start legacy datalog (" 
+                      << cpp_strerror(-r) << ")" << dendl;
+    return r;
+  }
+
+  // Determine if we're the master zone of our zonegroup
+  const auto& zonegroup = driver->get_zone()->get_zonegroup();
+  const auto& our_zone_id = driver->get_zone()->get_zone_params().get_id();
+  bool we_are_master_zone = (zonegroup.master_zone.id == our_zone_id);
+  
+  ldpp_dout(dpp, 10) << "our zone " << our_zone_id 
+                     << (we_are_master_zone ? " is" : " is not") 
+                     << " master zone of zonegroup" << dendl;
+
+  // Create and start per-zone logs
+  // - For zones in our zonegroup: always create per-zone logs
+  // - For zones in other zonegroups: only create if we're the master zone
+  for (const auto& [zone_id, conn] : target_zones) {
+    (void)conn; // Suppress unused variable warning
+    
+    // Check if target zone is in our zonegroup
+    bool same_zonegroup = (zonegroup.zones.find(zone_id) != zonegroup.zones.end());
+    
+    // Skip cross-zonegroup logs if we're not the master zone
+    if (!same_zonegroup && !we_are_master_zone) {
+      ldpp_dout(dpp, 10) << "skipping per-zone datalog for cross-zonegroup zone " 
+                         << zone_id.id << " (we are not master zone)" << dendl;
+      continue;
+    }
+    
+    std::string zone_prefix = fmt::format("data_log.{}", zone_id.id);
+    auto zone_log = std::make_unique<RGWDataChangesLog>(driver, zone_prefix);
+    r = zone_log->start(dpp, zone, zoneparams, background_tasks);
+    if (r < 0) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to start datalog for zone " 
+                        << zone_id.id << " (" << cpp_strerror(-r) << ")" << dendl;
+      // Failing to start a per-zone log is fatal because notifications and trimming
+      // depend on all target zones having functional logs
+      // Clean up any previously started zone logs before returning error
+      for (auto& [cleanup_zone_id, cleanup_log] : zone_logs) {
+        ldpp_dout(dpp, 10) << "cleaning up started datalog for zone " 
+                          << cleanup_zone_id.id << dendl;
+        cleanup_log->blocking_shutdown();
+      }
+      zone_logs.clear();
+      // Also shut down the legacy log that was started before per-zone logs
+      if (legacy_log) {
+        ldpp_dout(dpp, 10) << "cleaning up legacy datalog" << dendl;
+        legacy_log->blocking_shutdown();
+        legacy_log.reset();
+      }
+      return r;
+    }
+    zone_logs[zone_id] = std::move(zone_log);
+    ldpp_dout(dpp, 10) << "started per-zone datalog for zone " << zone_id.id 
+                       << " (same_zonegroup=" << same_zonegroup << ") "
+                       << "with prefix " << zone_prefix << dendl;
+  }
+
+  return 0;
+}
+
+asio::awaitable<void> RGWDataChangesLogManager::add_entry(
+    const DoutPrefixProvider* dpp,
+    const RGWBucketInfo& bucket_info,
+    const rgw::bucket_log_layout_generation& gen,
+    int shard_id)
+{
+  // Parallelize fan-out writes using spawn_group
+  auto ex = co_await asio::this_coro::executor;
+  
+  // Calculate total number of writes: legacy + per-zone logs
+  size_t total_writes = 1 + zone_logs.size();
+  auto group = async::spawn_group{ex, total_writes};
+  
+  // Track errors from each write using indexed writes to avoid data races
+  struct WriteResult {
+    std::optional<rgw_zone_id> zone_id; // nullopt for legacy log
+    std::exception_ptr error;
+  };
+  auto results = std::make_shared<std::vector<WriteResult>>(total_writes);
+  
+  // Spawn legacy log write
+  asio::co_spawn(ex, 
+    [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
+      try {
+        co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
+      } catch (...) {
+        (*results)[0] = WriteResult{std::nullopt, std::current_exception()};
+      }
+      co_return;
+    }(),
+    group);
+  
+  // Spawn per-zone log writes in parallel
+  size_t idx = 1;
+  for (auto& [zone_id, zone_log] : zone_logs) {
+    asio::co_spawn(ex,
+      [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
+        try {
+          co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
+        } catch (...) {
+          ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
+                            << zone_id.id << " datalog" << dendl;
+          (*results)[idx] = WriteResult{zone_id, std::current_exception()};
+        }
+        co_return;
+      }(),
+      group);
+    ++idx;
+  }
+  
+  // Wait for all writes to complete
+  co_await group.wait();
+  
+  // Check for errors: legacy errors are fatal, zone errors are warnings but we throw the first
+  std::exception_ptr legacy_error;
+  std::exception_ptr first_zone_error;
+  
+  for (const auto& result : *results) {
+    if (result.error) {
+      if (!result.zone_id.has_value()) {
+        legacy_error = result.error;
+      } else if (!first_zone_error) {
+        first_zone_error = result.error;
+      }
+    }
+  }
+  
+  // If legacy log failed, rethrow that error (most critical)
+  if (legacy_error) {
+    std::rethrow_exception(legacy_error);
+  }
+
+  // If any zone log failed, throw the first zone error
+  if (first_zone_error) {
+    std::rethrow_exception(first_zone_error);
+  }
+}
+
+void RGWDataChangesLogManager::add_entry(
+    const DoutPrefixProvider* dpp,
+    const RGWBucketInfo& bucket_info,
+    const rgw::bucket_log_layout_generation& gen,
+    int shard_id,
+    asio::yield_context y)
+{
+  // Parallelize fan-out writes using spawn
+  auto ex = y.get_executor();
+  
+  // Calculate total number of writes
+  size_t total_writes = 1 + zone_logs.size();
+  auto group = async::spawn_group{ex, total_writes};
+  
+  // Track errors from each write using indexed writes to avoid data races
+  struct WriteResult {
+    std::optional<rgw_zone_id> zone_id; // nullopt for legacy log
+    std::exception_ptr error;
+  };
+  auto results = std::make_shared<std::vector<WriteResult>>(total_writes);
+  
+  // Spawn legacy log write
+  asio::co_spawn(ex,
+    [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
+      try {
+        co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
+      } catch (...) {
+        (*results)[0] = WriteResult{std::nullopt, std::current_exception()};
+      }
+      co_return;
+    }(),
+    group);
+  
+  // Spawn per-zone log writes in parallel
+  size_t idx = 1;
+  for (auto& [zone_id, zone_log] : zone_logs) {
+    asio::co_spawn(ex,
+      [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
+        try {
+          co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
+        } catch (...) {
+          ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
+                            << zone_id.id << " datalog" << dendl;
+          (*results)[idx] = WriteResult{zone_id, std::current_exception()};
+        }
+        co_return;
+      }(),
+      group);
+    ++idx;
+  }
+  
+  // Wait for all writes to complete
+  group.wait(y);
+  
+  // Check for errors: legacy errors are fatal, zone errors are warnings but we throw the first
+  std::exception_ptr legacy_error;
+  std::exception_ptr first_zone_error;
+  
+  for (const auto& result : *results) {
+    if (result.error) {
+      if (!result.zone_id.has_value()) {
+        legacy_error = result.error;
+      } else if (!first_zone_error) {
+        first_zone_error = result.error;
+      }
+    }
+  }
+  
+  // If legacy log failed, rethrow that error (most critical)
+  if (legacy_error) {
+    std::rethrow_exception(legacy_error);
+  }
+
+  // If any zone log failed, throw the first zone error
+  if (first_zone_error) {
+    std::rethrow_exception(first_zone_error);
+  }
+}
+
+int RGWDataChangesLogManager::add_entry(
+    const DoutPrefixProvider* dpp,
+    const RGWBucketInfo& bucket_info,
+    const rgw::bucket_log_layout_generation& gen,
+    int shard_id,
+    optional_yield y) noexcept
+{
+  // For optional_yield, we need to handle both null_yield and actual yield contexts
+  // If y is null, we can't easily parallelize, so fall back to sequential
+  // If y has a yield_context, we can use spawn_group for parallelization
+  
+  if (y) {
+    // Has yield context - parallelize using spawn_group
+    try {
+      auto ex = y->get_executor();
+      
+      // Calculate total number of writes
+      size_t total_writes = 1 + zone_logs.size();
+      auto group = async::spawn_group{ex, total_writes};
+      
+      // Track errors from each write using indexed writes to avoid data races
+      struct WriteResult {
+        std::optional<rgw_zone_id> zone_id; // nullopt for legacy log
+        int error_code;
+      };
+      auto results = std::make_shared<std::vector<WriteResult>>(total_writes);
+      
+      // Spawn legacy log write - use awaitable version to avoid deadlock
+      asio::co_spawn(ex,
+        [this, dpp, &bucket_info, &gen, shard_id, results]() -> asio::awaitable<void> {
+          try {
+            co_await legacy_log->add_entry(dpp, bucket_info, gen, shard_id);
+          } catch (const std::exception& e) {
+            ldpp_dout(dpp, 1) << "WARNING: failed to add entry to legacy datalog: " 
+                              << e.what() << dendl;
+            (*results)[0] = WriteResult{std::nullopt, -EIO};
+          } catch (...) {
+            ldpp_dout(dpp, 1) << "WARNING: unknown error adding entry to legacy datalog" << dendl;
+            (*results)[0] = WriteResult{std::nullopt, -EIO};
+          }
+          co_return;
+        }(),
+        group);
+      
+      // Spawn per-zone log writes in parallel - use awaitable version to avoid deadlock
+      size_t idx = 1;
+      for (auto& [zone_id, zone_log] : zone_logs) {
+        asio::co_spawn(ex,
+          [dpp, &bucket_info, &gen, shard_id, zone_id, zone_log = zone_log.get(), results, idx]() -> asio::awaitable<void> {
+            try {
+              co_await zone_log->add_entry(dpp, bucket_info, gen, shard_id);
+            } catch (const std::exception& e) {
+              ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
+                                << zone_id.id << " datalog: " << e.what() << dendl;
+              (*results)[idx] = WriteResult{zone_id, -EIO};
+            } catch (...) {
+              ldpp_dout(dpp, 1) << "WARNING: unknown error adding entry to zone " 
+                                << zone_id.id << " datalog" << dendl;
+              (*results)[idx] = WriteResult{zone_id, -EIO};
+            }
+            co_return;
+          }(),
+          group);
+        ++idx;
+      }
+      
+      // Wait for all writes to complete
+      group.wait(*y);
+      
+      // Check for errors: legacy errors are fatal, zone errors are warnings
+      int legacy_err = 0;
+      int zone_err = 0;
+      
+      for (const auto& result : *results) {
+        if (result.error_code < 0) {
+          if (!result.zone_id.has_value()) {
+            legacy_err = result.error_code;
+          } else if (zone_err == 0) {
+            zone_err = result.error_code;
+          }
+        }
+      }
+      
+      // Return legacy error if it failed, otherwise first zone error
+      return legacy_err ? legacy_err : zone_err;
+      
+    } catch (const std::exception& e) {
+      ldpp_dout(dpp, 1) << "ERROR: exception in parallel add_entry: " << e.what() << dendl;
+      return -EIO;
+    } catch (...) {
+      ldpp_dout(dpp, 1) << "ERROR: unknown exception in parallel add_entry" << dendl;
+      return -EIO;
+    }
+  } else {
+    // No yield context - fall back to sequential writes
+    // Fan out to legacy log - remember error but continue with zone logs
+    int legacy_err = legacy_log->add_entry(dpp, bucket_info, gen, shard_id, y);
+    if (legacy_err < 0) {
+      ldpp_dout(dpp, 1) << "WARNING: failed to add entry to legacy datalog: " 
+                        << cpp_strerror(-legacy_err) << dendl;
+    }
+
+    // Fan out to all zone logs, continuing even if legacy failed
+    int zone_err = 0;
+    for (auto& [zone_id, zone_log] : zone_logs) {
+      int r = zone_log->add_entry(dpp, bucket_info, gen, shard_id, y);
+      if (r < 0) {
+        ldpp_dout(dpp, 1) << "WARNING: failed to add entry to zone " 
+                          << zone_id.id << " datalog: " << cpp_strerror(-r) << dendl;
+        if (zone_err == 0) {
+          zone_err = r; // Remember first zone error
+        }
+      }
+    }
+
+    // Return legacy error if it failed, otherwise first zone error
+    return legacy_err ? legacy_err : zone_err;
+  }
+}
+
+RGWDataChangesLog* RGWDataChangesLogManager::get_zone_log(
+    const rgw_zone_id& zone_id)
+{
+  auto it = zone_logs.find(zone_id);
+  if (it != zone_logs.end()) {
+    return it->second.get();
+  }
+  return nullptr;
+}
+
+std::vector<rgw_zone_id> RGWDataChangesLogManager::get_zone_ids() const
+{
+  std::vector<rgw_zone_id> zone_ids;
+  zone_ids.reserve(zone_logs.size());
+  for (const auto& [zone_id, _] : zone_logs) {
+    zone_ids.push_back(zone_id);
+  }
+  return zone_ids;
+}
+
+asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
+                           std::string, bool>>
+RGWDataChangesLogManager::list_entries(
+    const DoutPrefixProvider* dpp,
+    const std::optional<rgw_zone_id>& zone_id,
+    int shard, int max_entries, std::string marker)
+{
+  if (zone_id) {
+    auto* zone_log = get_zone_log(*zone_id);
+    if (!zone_log) {
+      throw sys::system_error{-ENOENT, sys::generic_category(),
+        fmt::format("Zone log not found for zone: {}", zone_id->id)};
+    }
+    co_return co_await zone_log->list_entries(dpp, shard, max_entries, marker);
+  } else {
+    co_return co_await legacy_log->list_entries(dpp, shard, max_entries, marker);
+  }
+}
+
+asio::awaitable<void> RGWDataChangesLogManager::trim_entries(
+    const DoutPrefixProvider* dpp,
+    const rgw_zone_id& zone_id,
+    int shard_id,
+    std::string_view marker)
+{
+  auto* zone_log = get_zone_log(zone_id);
+  if (!zone_log) {
+    throw sys::system_error{-ENOENT, sys::generic_category(),
+      fmt::format("Zone log not found for zone: {}", zone_id.id)};
+  }
+  co_await zone_log->trim_entries(dpp, shard_id, marker);
+}
+
+asio::awaitable<RGWDataChangesLogInfo> RGWDataChangesLogManager::get_info(
+    const DoutPrefixProvider* dpp,
+    const rgw_zone_id& zone_id,
+    int shard_id)
+{
+  auto* zone_log = get_zone_log(zone_id);
+  if (!zone_log) {
+    throw sys::system_error{-ENOENT, sys::generic_category(),
+      fmt::format("Zone log not found for zone: {}", zone_id.id)};
+  }
+  co_return co_await zone_log->get_info(dpp, shard_id);
+}
+
+std::map<rgw_zone_id, bc::flat_map<int, bc::flat_set<rgw_data_notify_entry>>>
+RGWDataChangesLogManager::read_clear_modified_by_zone()
+{
+  std::map<rgw_zone_id, bc::flat_map<int, bc::flat_set<rgw_data_notify_entry>>> result;
+  for (auto& [zone_id, zone_log] : zone_logs) {
+    auto modified = zone_log->read_clear_modified();
+    // Only include zones with non-empty modified sets
+    if (!modified.empty()) {
+      result.emplace(zone_id, std::move(modified));
+    }
+  }
+  // Also clear the legacy log's modified shards to prevent unbounded growth
+  // even though we're not using them for per-zone notifications
+  if (legacy_log) {
+    legacy_log->read_clear_modified();
+  }
+  return result;
+}
+
+void RGWDataChangesLogManager::set_observer(rgw::BucketChangeObserver* observer)
+{
+  if (legacy_log) {
+    legacy_log->set_observer(observer);
+  }
+  for (auto& [zone_id, zone_log] : zone_logs) {
+    zone_log->set_observer(observer);
+  }
+}
+
+void RGWDataChangesLogManager::set_bucket_filter(
+    std::function<bool(const rgw_bucket& bucket, optional_yield y,
+                       const DoutPrefixProvider* dpp)>&& f)
+{
+  // Create a shared_ptr to the filter function so we can share it across all logs
+  auto filter = std::make_shared<
+      std::function<bool(const rgw_bucket&, optional_yield,
+                         const DoutPrefixProvider*)>
+    >(std::move(f));
+  
+  if (legacy_log) {
+    legacy_log->set_bucket_filter([filter](const rgw_bucket& bucket, 
+                                           optional_yield y,
+                                           const DoutPrefixProvider* dpp) {
+      return (*filter)(bucket, y, dpp);
+    });
+  }
+  for (auto& [zone_id, zone_log] : zone_logs) {
+    zone_log->set_bucket_filter([filter](const rgw_bucket& bucket,
+                                         optional_yield y,
+                                         const DoutPrefixProvider* dpp) {
+      return (*filter)(bucket, y, dpp);
+    });
+  }
+}
+
+void RGWDataChangesLogManager::stop()
+{
+  if (legacy_log) {
+    legacy_log->blocking_shutdown();
+  }
+  for (auto& [zone_id, zone_log] : zone_logs) {
+    zone_log->blocking_shutdown();
+  }
 }

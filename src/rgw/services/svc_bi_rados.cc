@@ -32,12 +32,14 @@ RGWSI_BucketIndex_RADOS::RGWSI_BucketIndex_RADOS(CephContext *cct) : RGWSI_Bucke
 void RGWSI_BucketIndex_RADOS::init(RGWSI_Zone *zone_svc,
 				   librados::Rados* rados_,
 				   RGWSI_BILog_RADOS *bilog_svc,
-				   RGWDataChangesLog *datalog_rados_svc)
+				   RGWDataChangesLog *datalog_rados_svc,
+				   RGWDataChangesLogManager *datalog_manager_svc)
 {
   svc.zone = zone_svc;
   rados = rados_;
   svc.bilog = bilog_svc;
   svc.datalog_rados = datalog_rados_svc;
+  svc.datalog_manager = datalog_manager_svc;
 }
 
 int RGWSI_BucketIndex_RADOS::open_pool(const DoutPrefixProvider *dpp,
@@ -1035,7 +1037,7 @@ int RGWSI_BucketIndex_RADOS::handle_overwrite(const DoutPrefixProvider *dpp,
   }
 
   for (int i = 0; i < shards_num; ++i) {
-    ret = svc.datalog_rados->add_entry(dpp, info, bilog, i, y);
+    ret = svc.datalog_manager->add_entry(dpp, info, bilog, i, y);
     if (ret < 0) {
       ldpp_dout(dpp, -1) << "ERROR: failed writing data log (info.bucket=" << info.bucket << ", shard_id=" << i << ")" << dendl;
     } // datalog error is now fatal, so we'll error on semaphore increment failure

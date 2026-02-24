@@ -37,6 +37,7 @@ class RGWUserCtl;
 class RGWBucketCtl;
 class RGWZone;
 struct RGWZoneParams;
+class RGWDataChangesLogManager;
 
 // this is used as a filter to RGWRados::cls_bucket_list_ordered; it
 // conforms to the type RGWBucketListNameFilter
@@ -181,7 +182,7 @@ auto create_bucket_instance_metadata_handler(rgw::sal::Driver* driver,
                                              RGWSI_Zone* svc_zone,
                                              RGWSI_Bucket* svc_bucket,
                                              RGWSI_BucketIndex* svc_bi,
-                                             RGWDataChangesLog *svc_datalog)
+                                             RGWDataChangesLogManager *svc_datalog)
     -> std::unique_ptr<RGWMetadataHandler>;
 
 // archive bucket entrypoint metadata handler factory
@@ -195,7 +196,7 @@ auto create_archive_bucket_instance_metadata_handler(rgw::sal::Driver* driver,
                                                      RGWSI_Zone* svc_zone,
                                                      RGWSI_Bucket* svc_bucket,
                                                      RGWSI_BucketIndex* svc_bi,
-                                                     RGWDataChangesLog *svc_datalog)
+                                                     RGWDataChangesLogManager *svc_datalog)
     -> std::unique_ptr<RGWMetadataHandler>;
 
 

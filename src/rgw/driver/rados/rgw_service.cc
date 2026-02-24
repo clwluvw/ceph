@@ -62,7 +62,8 @@ int RGWServices_Def::init(CephContext *cct,
   bilog_rados = std::make_unique<RGWSI_BILog_RADOS>(cct);
   cls = std::make_unique<RGWSI_Cls>(cct);
   config_key_rados = std::make_unique<RGWSI_ConfigKey_RADOS>(cct);
-  datalog_rados = std::make_unique<RGWDataChangesLog>(driver);
+  // Note: datalog_rados will be set to point to manager's legacy log after manager init
+  datalog_manager = std::make_unique<RGWDataChangesLogManager>();
   mdlog = std::make_unique<RGWSI_MDLog>(cct, run_sync, cfgstore);
   if (have_cache) {
     notify = std::make_unique<RGWSI_Notify>(cct);
@@ -83,7 +84,7 @@ int RGWServices_Def::init(CephContext *cct,
 
   async_processor->start();
   bi_rados->init(zone.get(), driver->getRados()->get_rados_handle(),
-		 bilog_rados.get(), datalog_rados.get());
+		 bilog_rados.get(), nullptr, datalog_manager.get());
   bilog_rados->init(bi_rados.get());
   bucket_sobj->init(zone.get(), sysobj.get(), sysobj_cache.get(),
                     bi_rados.get(), mdlog.get(),
@@ -133,13 +134,24 @@ int RGWServices_Def::init(CephContext *cct,
       return r;
     }
 
-    r = datalog_rados->start(dpp, &zone->get_zone(),
-			     zone->get_zone_params(),
-			     background_tasks);
+    // Initialize the datalog manager with per-zone logs
+    r = datalog_manager->init(dpp, driver, &zone->get_zone(),
+                              zone->get_zone_params(),
+                              zone->get_zone_data_notify_to_map(),
+                              background_tasks);
     if (r < 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to start datalog_rados service (" << cpp_strerror(-r) << dendl;
+      ldpp_dout(dpp, 0) << "ERROR: failed to initialize datalog_manager (" 
+                        << cpp_strerror(-r) << ")" << dendl;
       return r;
     }
+
+    // Set datalog_rados to point to the manager's legacy log (non-owning pointer)
+    // The manager owns the legacy log, we just keep a pointer for backward compatibility
+    datalog_rados = datalog_manager->get_legacy_log();
+    
+    // Now update bi_rados with both datalog pointers
+    bi_rados->svc.datalog_rados = datalog_rados;
+    bi_rados->svc.datalog_manager = datalog_manager.get();
 
     r = mdlog->start(y, dpp);
     if (r < 0) {
@@ -233,7 +245,13 @@ void RGWServices_Def::shutdown()
     return;
   }
 
-  datalog_rados.reset();
+  // Stop datalog_manager while its logs (including datalog_rados) are still alive
+  if (datalog_manager) {
+    datalog_manager->stop();
+  }
+  // Now it is safe to reset datalog_rados (non-owning, just clear the pointer) and release the manager
+  datalog_rados = nullptr;
+  datalog_manager.reset();
   user_rados->shutdown();
   sync_modules->shutdown();
   if (notify) {
@@ -280,7 +298,8 @@ int RGWServices::do_init(CephContext *_cct, rgw::sal::RadosStore* driver, bool h
   cls = _svc.cls.get();
   config_key_rados = _svc.config_key_rados.get();
   config_key = config_key_rados;
-  datalog_rados = _svc.datalog_rados.get();
+  datalog_rados = _svc.datalog_rados;  // datalog_rados is already a raw pointer
+  datalog_manager = _svc.datalog_manager.get();
   mdlog = _svc.mdlog.get();
   zone = _svc.zone.get();
   zone_utils = _svc.zone_utils.get();
@@ -339,11 +358,11 @@ int RGWCtlDef::init(RGWServices& svc, rgw::sal::Driver* driver,
   if (sync_module) {
     meta.bucket = sync_module->alloc_bucket_meta_handler(rados, svc.bucket, bucket.get());
     meta.bucket_instance = sync_module->alloc_bucket_instance_meta_handler(
-        driver, svc.zone, svc.bucket, svc.bi, svc.datalog_rados);
+        driver, svc.zone, svc.bucket, svc.bi, svc.datalog_manager);
   } else {
     meta.bucket = create_bucket_metadata_handler(rados, svc.bucket, bucket.get());
     meta.bucket_instance = create_bucket_instance_metadata_handler(
-        driver, svc.zone, svc.bucket, svc.bi, svc.datalog_rados);
+        driver, svc.zone, svc.bucket, svc.bi, svc.datalog_manager);
   }
 
   meta.otp = rgwrados::otp::create_metadata_handler(

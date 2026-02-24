@@ -652,8 +652,29 @@ void RGWOp_BILog_Delete::execute(optional_yield y) {
   return;
 }
 
+// Helper function to resolve datalog based on zone-id parameter
+// Returns pair<RGWDataChangesLog*, int> where int is error code (0 = success, -ENOENT = zone not found)
+static std::pair<RGWDataChangesLog*, int> resolve_datalog(
+    const DoutPrefixProvider* dpp,
+    rgw::sal::RadosStore* store,
+    const std::string& zone_id_str)
+{
+  if (!zone_id_str.empty()) {
+    rgw_zone_id zone_id(zone_id_str);
+    auto* datalog = store->svc()->datalog_manager->get_zone_log(zone_id);
+    if (!datalog) {
+      ldpp_dout(dpp, 5) << "Zone log not found for zone-id " << zone_id_str << dendl;
+      return {nullptr, -ENOENT};
+    }
+    return {datalog, 0};
+  } else {
+    return {store->svc()->datalog_manager->get_legacy_log(), 0};
+  }
+}
+
 void RGWOp_DATALog_List::execute(optional_yield y) {
   string   shard = s->info.args.get("id");
+  string   zone_id_str = s->info.args.get("zone-id");
 
   string   max_entries_str = s->info.args.get("max-entries"),
            marker = s->info.args.get("marker"),
@@ -690,11 +711,20 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
   // Note that last_marker is updated to be the marker of the last
   // entry listed
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
+  
+  // Select zone-specific or legacy log based on zone-id parameter
+  auto datalog_result = resolve_datalog(this, store, zone_id_str);
+  RGWDataChangesLog* datalog = datalog_result.first;
+  int ret = datalog_result.second;
+  if (ret < 0) {
+    op_ret = ret;
+    return;
+  }
+
   op_ret = rgw::run_coro(
     this,
     store->get_io_context(),
-    store->svc()->datalog_rados->list_entries(this, shard_id,
-					      max_entries, marker),
+    datalog->list_entries(this, shard_id, max_entries, marker),
     std::tie(entries, last_marker, truncated),
     "RGWDataChangesLog::list_entries", y);
 
@@ -703,7 +733,7 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
   op_ret = rgw::run_coro(
     this,
     store->get_io_context(),
-    store->svc()->datalog_rados->get_info(this, shard_id),
+    datalog->get_info(this, shard_id),
     info, "RGWDataChangesLog::get_info", y);
 
   last_update = info.last_update;
@@ -757,6 +787,7 @@ void RGWOp_DATALog_Info::send_response() {
 
 void RGWOp_DATALog_ShardInfo::execute(optional_yield y) {
   string shard = s->info.args.get("id");
+  string zone_id_str = s->info.args.get("zone-id");
   string err;
 
   unsigned shard_id = (unsigned)strict_strtol(shard.c_str(), 10, &err);
@@ -767,8 +798,18 @@ void RGWOp_DATALog_ShardInfo::execute(optional_yield y) {
   }
 
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
+  
+  // Select zone-specific or legacy log based on zone-id parameter
+  auto datalog_result = resolve_datalog(this, store, zone_id_str);
+  RGWDataChangesLog* datalog = datalog_result.first;
+  int ret = datalog_result.second;
+  if (ret < 0) {
+    op_ret = ret;
+    return;
+  }
+
   op_ret = rgw::run_coro(this, store->get_io_context(),
-			 store->svc()->datalog_rados->get_info(this, shard_id),
+			 datalog->get_info(this, shard_id),
 			 info, "RGWDataChangesLog::get_info", y);
 }
 
@@ -882,6 +923,7 @@ void RGWOp_DATALog_Notify2::execute(optional_yield y) {
 void RGWOp_DATALog_Delete::execute(optional_yield y) {
   string   marker = s->info.args.get("marker"),
            shard = s->info.args.get("id"),
+           zone_id_str = s->info.args.get("zone-id"),
            err;
   unsigned shard_id;
 
@@ -919,9 +961,19 @@ void RGWOp_DATALog_Delete::execute(optional_yield y) {
   }
 
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
+  
+  // Select zone-specific or legacy log based on zone-id parameter
+  auto datalog_result = resolve_datalog(this, store, zone_id_str);
+  RGWDataChangesLog* datalog = datalog_result.first;
+  int ret = datalog_result.second;
+  if (ret < 0) {
+    op_ret = ret;
+    return;
+  }
+
   op_ret = rgw::run_coro(
     this, store->get_io_context(),
-    store->svc()->datalog_rados->trim_entries(this, shard_id, marker),
+    datalog->trim_entries(this, shard_id, marker),
     "RGWDataChangesLog::trim_entries", y);
 }
 
@@ -1180,6 +1232,11 @@ public:
 
 void RGWOp_DATALog_Status::execute(optional_yield y)
 {
+  // Note: RGWOp_DATALog_Status uses source-zone parameter for sync status,
+  // not zone-id for log selection. This is intentional - it queries sync status
+  // from a specific source zone, which is conceptually different from selecting
+  // which datalog to query. The zone-id pattern is used by List/Delete/ShardInfo
+  // to select a specific per-zone log, but Status queries sync state, not log content.
   const auto source_zone = s->info.args.get("source-zone");
   auto sync = driver->get_data_sync_manager(source_zone);
   if (sync == nullptr) {
