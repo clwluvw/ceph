@@ -210,7 +210,7 @@ class DataLogBackends final
 
   std::mutex m;
   RGWDataChangesLog& datalog;
-  std::optional<rgw_zone_id> zone_id; // nullopt for legacy backends
+  std::optional<std::string> zonegroup_id; // nullopt for legacy backends
 
   DataLogBackends(neorados::RADOS rados,
 		  const neorados::Object oid,
@@ -218,10 +218,10 @@ class DataLogBackends final
 		  fu2::unique_function<std::string(
 		    uint64_t, int) const>&& get_oid,
                  int shards, RGWDataChangesLog& datalog,
-                 std::optional<rgw_zone_id> zone_id = std::nullopt) noexcept
+                 std::optional<std::string> zonegroup_id = std::nullopt) noexcept
     : logback_generations(rados, oid, loc, std::move(get_oid),
                          shards), datalog(datalog),
-      zone_id(std::move(zone_id)) {}
+      zonegroup_id(std::move(zonegroup_id)) {}
 public:
 
   boost::intrusive_ptr<RGWDataChangesBE> head() {
@@ -358,8 +358,8 @@ struct hash<BucketGen> {
 };
 }
 
-struct ZoneLog {
-  rgw_zone_id zone_id;
+struct ZonegroupLog {
+  std::string zonegroup_id;
   std::unique_ptr<DataLogBackends> bes;
   std::vector<bc::flat_set<std::string>> semaphores;
 };
@@ -373,9 +373,10 @@ class RGWDataChangesLog {
   rgw::BucketChangeObserver *observer = nullptr;
   bool log_data = false;
   std::unique_ptr<DataLogBackends> bes; // legacy backend
-  std::map<rgw_zone_id, ZoneLog> zone_logs; // per-zone backends
-  std::vector<rgw_zone_id> target_zone_ids_; // zones to create per-zone logs for
-  bool legacy_writes_disabled_ = false; // when per_zone_datalog feature enabled everywhere
+  std::map<std::string, ZonegroupLog> zonegroup_logs; // per-zonegroup backends
+  std::vector<std::string> target_zonegroup_ids_; // zonegroups to create backends for
+  std::vector<rgw_zone_id> notify_zone_ids_; // peer zones for notification fan-out
+  bool legacy_writes_disabled_ = false; // when per_zonegroup_datalog feature enabled everywhere
 
   using executor_t = asio::io_context::executor_type;
   executor_t executor;
@@ -394,21 +395,21 @@ class RGWDataChangesLog {
 
   const int num_shards;
   std::string get_prefix() { return "data_log"; }
-  std::string get_prefix(const rgw_zone_id& zone) {
-    return fmt::format("data_log.{}", zone.id);
+  std::string get_prefix(const std::string& zonegroup) {
+    return fmt::format("data_log.{}", zonegroup);
   }
   std::string metadata_log_oid() {
     return get_prefix() + "generations_metadata";
   }
-  std::string metadata_log_oid(const rgw_zone_id& zone) {
-    return get_prefix(zone) + "generations_metadata";
+  std::string metadata_log_oid(const std::string& zonegroup) {
+    return get_prefix(zonegroup) + "generations_metadata";
   }
   std::string prefix;
 
   std::mutex lock;
   std::shared_mutex modified_lock;
   bc::flat_map<int, bc::flat_set<rgw_data_notify_entry>> modified_shards;
-  // Per-zone modified shards for zone-specific notifications
+  // Per-zone modified shards for zone-specific notifications (keyed by zone_id)
   std::map<rgw_zone_id, bc::flat_map<int, bc::flat_set<rgw_data_notify_entry>>>
     zone_modified_shards;
 
@@ -476,12 +477,13 @@ public:
   asio::awaitable<void> start_background(const DoutPrefixProvider* dpp,
                                         bool recovery, bool watch,
                                         bool renew);
-  // Non-coroutine per-zone backend initialization. Uses individual
+  // Non-coroutine per-zonegroup backend initialization. Uses individual
   // co_spawn calls per zone to avoid GCC coroutine frame corruption.
-  void init_zone_backends(const DoutPrefixProvider* dpp,
+  void init_zonegroup_backends(const DoutPrefixProvider* dpp,
                          log_type defbacking);
   int start(const DoutPrefixProvider *dpp, const RGWZone* _zone,
            const RGWZoneParams& zoneparams,
+	   const std::string& zonegroup_id,
            const std::map<rgw_zone_id, RGWRESTConn*>& notify_zones,
            bool legacy_writes_disabled,
            bool background_tasks) noexcept;
@@ -552,40 +554,44 @@ public:
   void set_bucket_filter(decltype(bucket_filter)&& f) {
     bucket_filter = std::move(f);
   }
+  // True when per-zonegroup datalog backends are active
+  bool has_zonegroup_backends() const {
+    return !zonegroup_logs.empty();
+  }
   // a marker that compares greater than any other
   std::string max_marker() const;
   std::string get_oid(uint64_t gen_id, int shard_id) const;
-  std::string get_oid(const rgw_zone_id& zone, uint64_t gen_id,
+  std::string get_oid(const std::string& zonegroup, uint64_t gen_id,
                      int shard_id) const;
   std::string get_sem_set_oid(int shard_id) const;
-  std::string get_sem_set_oid(const rgw_zone_id& zone, int shard_id) const;
+  std::string get_sem_set_oid(const std::string& zonegroup, int shard_id) const;
 
-  // Per-zone API overloads
+  // Per-zonegroup API overloads
   asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
                             std::string, bool>>
-  list_entries(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
+  list_entries(const DoutPrefixProvider* dpp, const std::string& zonegroup,
               int shard, int max_entries, std::string marker);
   asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
                             RGWDataChangesLogMarker, bool>>
-  list_entries(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
+  list_entries(const DoutPrefixProvider* dpp, const std::string& zonegroup,
               int max_entries, RGWDataChangesLogMarker marker);
   asio::awaitable<RGWDataChangesLogInfo>
-  get_info(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
+  get_info(const DoutPrefixProvider* dpp, const std::string& zonegroup,
           int shard_id);
   asio::awaitable<void>
-  trim_entries(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
+  trim_entries(const DoutPrefixProvider* dpp, const std::string& zonegroup,
               int shard_id, std::string_view marker);
-  void trim_entries(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
+  void trim_entries(const DoutPrefixProvider* dpp, const std::string& zonegroup,
                    int shard_id, std::string_view marker,
                    librados::AioCompletion* c);
   asio::awaitable<void>
-  trim_generations(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
+  trim_generations(const DoutPrefixProvider* dpp, const std::string& zonegroup,
                   std::optional<uint64_t>& through);
   asio::awaitable<void>
-  change_format(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
+  change_format(const DoutPrefixProvider* dpp, const std::string& zonegroup,
                log_type type);
 
-  std::vector<rgw_zone_id> get_zone_ids() const;
+  std::vector<std::string> get_zonegroup_ids() const;
 
 
   asio::awaitable<std::pair<bc::flat_map<std::string, uint64_t>,
@@ -603,20 +609,20 @@ public:
 		 ceph::mono_time fetch_time,
 		 bc::flat_map<std::string, uint64_t>&& semcount);
   asio::awaitable<void> recover_shard(const DoutPrefixProvider* dpp, int index);
-  // Per-zone recovery methods
+  // Per-zonegroup recovery methods
   asio::awaitable<std::pair<bc::flat_map<std::string, uint64_t>,
                            std::string>>
-  read_sems(const rgw_zone_id& zone, int index, std::string cursor);
+  read_sems(const std::string& zonegroup, int index, std::string cursor);
   asio::awaitable<bool>
-  synthesize_entries(const DoutPrefixProvider* dpp, const rgw_zone_id& zone,
+  synthesize_entries(const DoutPrefixProvider* dpp, const std::string& zonegroup,
                     int index,
                     const bc::flat_map<std::string, uint64_t>& semcount);
   asio::awaitable<void>
-  decrement_sems(const rgw_zone_id& zone, int index,
+  decrement_sems(const std::string& zonegroup, int index,
                 ceph::mono_time fetch_time,
                 bc::flat_map<std::string, uint64_t>&& semcount);
-  asio::awaitable<void> recover_zone_shard(const DoutPrefixProvider* dpp,
-                                          const rgw_zone_id& zone, int index);
+  asio::awaitable<void> recover_zonegroup_shard(const DoutPrefixProvider* dpp,
+                                          const std::string& zonegroup, int index);
   asio::awaitable<void> recover(const DoutPrefixProvider* dpp);
   asio::awaitable<void> async_shutdown();
   void blocking_shutdown();
@@ -635,7 +641,7 @@ protected:
   neorados::RADOS r;
   neorados::IOContext loc;
   RGWDataChangesLog& datalog;
-  std::optional<rgw_zone_id> zone_id; // nullopt for legacy backends
+  std::optional<std::string> zonegroup_id; // nullopt for legacy backends
 
   CephContext* cct{r.cct()};
 
@@ -650,9 +656,9 @@ public:
 		   neorados::IOContext loc,
 		   RGWDataChangesLog& datalog,
                   uint64_t gen_id,
-                  std::optional<rgw_zone_id> zone_id = std::nullopt)
+                  std::optional<std::string> zonegroup_id = std::nullopt)
     : r(r), loc(std::move(loc)), datalog(datalog),
-      zone_id(std::move(zone_id)), gen_id(gen_id) {}
+      zonegroup_id(std::move(zonegroup_id)), gen_id(gen_id) {}
   virtual ~RGWDataChangesBE() = default;
 
   virtual void prepare(ceph::real_time now, const std::string& key,

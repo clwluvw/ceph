@@ -1441,34 +1441,34 @@ def test_datalog_autotrim():
             after_trim = dateutil.parser.isoparse(entries[0]['timestamp'])
             assert before_trim < after_trim, "any datalog entries must be newer than trim"
 
-# --- Per-zone datalog helpers ---
+# --- Per-zonegroup datalog helpers ---
 
-def datalog_list_zone(zone, zone_name, args=None):
-    """List datalog entries for a specific target zone's per-zone datalog."""
-    cmd = ['datalog', 'list', '--log-zone', zone_name]
+def datalog_list_zonegroup(zone, zone_name, args=None):
+    """List datalog entries for a specific target zonegroup's per-zonegroup datalog."""
+    cmd = ['datalog', 'list', '--log-zonegroup', zone_name]
     if args:
         cmd += args
     (result_json, _) = zone.cluster.admin(cmd, read_only=True)
     return json.loads(result_json)
 
-def datalog_status_zone(zone, zone_name):
-    """Get datalog status for a specific target zone's per-zone datalog."""
-    cmd = ['datalog', 'status', '--log-zone', zone_name]
+def datalog_status_zonegroup(zone, zone_name):
+    """Get datalog status for a specific target zonegroup's per-zonegroup datalog."""
+    cmd = ['datalog', 'status', '--log-zonegroup', zone_name]
     (result_json, _) = zone.cluster.admin(cmd, read_only=True)
     return json.loads(result_json)
 
-def datalog_trim_zone(zone, zone_name, shard_id, marker):
-    """Trim datalog entries for a specific target zone's per-zone datalog."""
-    cmd = ['datalog', 'trim', '--log-zone', zone_name,
+def datalog_trim_zonegroup(zone, zone_name, shard_id, marker):
+    """Trim datalog entries for a specific target zonegroup's per-zonegroup datalog."""
+    cmd = ['datalog', 'trim', '--log-zonegroup', zone_name,
            '--shard-id', str(shard_id), '--marker', marker]
     zone.cluster.admin(cmd)
 
-def test_per_zone_datalog_entries():
-    """Verify that per-zone datalogs are populated and that sync works
+def test_per_zonegroup_datalog_entries():
+    """Verify that per-zonegroup datalogs are populated and that sync works
     correctly through per-zone logs (both full and incremental)."""
     zonegroup = realm.master_zonegroup()
     if len(zonegroup.rw_zones) < 2:
-        raise SkipTest("test_per_zone_datalog_entries skipped. Requires 2 or more RW zones.")
+        raise SkipTest("test_per_zonegroup_datalog_entries skipped. Requires 2 or more RW zones.")
 
     zonegroup_conns = ZonegroupConns(zonegroup)
 
@@ -1483,15 +1483,12 @@ def test_per_zone_datalog_entries():
     source_conn.s3_client.put_object(
         Bucket=bucket_name, Key=key1, Body='perzone-body-1')
 
-    # before sync completes, per-zone datalogs on the source should
-    # already have entries for every peer zone
-    for target_conn in zonegroup_conns.rw_zones:
-        if target_conn.zone.id == source_conn.zone.id:
-            continue
-        entries = datalog_list_zone(source_conn.zone, target_conn.zone.name)
-        assert len(entries) > 0, \
-            "Per-zone datalog on %s for target %s should have entries" % \
-            (source_conn.zone.name, target_conn.zone.name)
+    # before sync completes, the per-zonegroup datalog on the source
+    # should already have entries (all peer zones share one zonegroup log)
+    entries = datalog_list_zonegroup(source_conn.zone, zonegroup.name)
+    assert len(entries) > 0, \
+        "Per-zonegroup datalog on %s for zonegroup %s should have entries" % \
+        (source_conn.zone.name, zonegroup.name)
 
     # wait for full sync and verify data arrived
     zonegroup_data_checkpoint(zonegroup_conns)
@@ -1518,86 +1515,87 @@ def test_per_zone_datalog_entries():
             "Zone %s has wrong data for %s after incremental sync" % \
             (target_conn.zone.name, key2)
 
-def test_per_zone_datalog_trim_independence():
-    """Verify that trimming a caught-up zone's datalog preserves entries
-    for a zone that is still behind.
+def test_per_zonegroup_datalog_trim_independence():
+    """Verify that trimming one zonegroup's datalog does not affect another.
 
-    Stop zone C so it falls behind, write data on zone A, wait for zone B
-    to pull and sync, then trim zone B's per-zone datalog on zone A.
-    Zone C's per-zone datalog on zone A must still contain the entries so
-    zone C can catch up once it comes back.
+    Requires two zonegroups with at least 2 zones each. Write data in
+    each zonegroup, verify per-zonegroup datalogs are distinct, trim
+    one zonegroup's log and verify the other is unchanged.
     """
-    zonegroup = realm.master_zonegroup()
-    zonegroup_conns = ZonegroupConns(zonegroup)
+    if len(realm.current_period.zonegroups) < 2:
+        raise SkipTest("Requires 2 or more zonegroups.")
 
-    if len(zonegroup_conns.rw_zones) < 3:
-        raise SkipTest("Requires 3 or more RW zones.")
+    zonegroups = realm.current_period.zonegroups
+    zg_a = zonegroups[0]
+    zg_b = zonegroups[1]
 
-    zone_a_conn = zonegroup_conns.rw_zones[0]  # source — writes data
-    zone_b_conn = zonegroup_conns.rw_zones[1]  # consumer — stays up, pulls
-    zone_c_conn = zonegroup_conns.rw_zones[2]  # consumer — stopped, falls behind
-    zone_a = zone_a_conn.zone
-    zone_b = zone_b_conn.zone
-    zone_c = zone_c_conn.zone
+    if len(zg_a.rw_zones) < 2 or len(zg_b.rw_zones) < 2:
+        raise SkipTest("Each zonegroup must have at least 2 RW zones.")
 
-    # make sure everything is in sync before we start
-    zonegroup_meta_checkpoint(zonegroup)
-    zonegroup_data_checkpoint(zonegroup_conns)
+    zg_a_conns = ZonegroupConns(zg_a)
+    zg_b_conns = ZonegroupConns(zg_b)
+    zone_a = zg_a_conns.rw_zones[0]  # source in zonegroup A
+    zone_b = zg_b_conns.rw_zones[0]  # source in zonegroup B
 
-    # --- stop zone C so it falls behind ---
-    zone_c.stop()
+    # sync within each zonegroup before we start
+    zonegroup_meta_checkpoint(zg_a)
+    zonegroup_data_checkpoint(zg_a_conns)
+    zonegroup_meta_checkpoint(zg_b)
+    zonegroup_data_checkpoint(zg_b_conns)
 
-    # write an object on zone A (the source)
-    bucket_name = gen_bucket_name()
-    log.info('create bucket zone=%s name=%s', zone_a.name, bucket_name)
-    zone_a_conn.create_bucket(bucket_name)
-    # only checkpoint zones that are up (zone C is stopped)
-    zone_meta_checkpoint(zone_b)
-    zone_a_conn.s3_client.put_object(
-        Bucket=bucket_name, Key='trim-ind-key', Body='trim-ind-body')
+    # write data in zonegroup A
+    bucket_a = gen_bucket_name()
+    zone_a.create_bucket(bucket_a)
+    zonegroup_meta_checkpoint(zg_a)
+    zone_a.s3_client.put_object(
+        Bucket=bucket_a, Key='trim-a-key', Body='trim-a-body')
 
-    # wait for zone B to pull from zone A (zone C is down, skip it)
-    zone_bucket_checkpoint(zone_b, zone_a, bucket_name)
+    # write data in zonegroup B
+    bucket_b = gen_bucket_name()
+    zone_b.create_bucket(bucket_b)
+    zonegroup_meta_checkpoint(zg_b)
+    zone_b.s3_client.put_object(
+        Bucket=bucket_b, Key='trim-b-key', Body='trim-b-body')
 
-    # zone C's per-zone datalog on zone A should have entries (it hasn't
-    # pulled yet)
-    entries_c = datalog_list_zone(zone_a, zone_c.name)
-    assert len(entries_c) > 0, \
-        "Zone C per-zone datalog should have entries (zone C hasn't synced)"
+    # verify each zonegroup has its own datalog entries
+    entries_a = datalog_list_zonegroup(zone_a.zone, zg_a.name)
+    entries_b = datalog_list_zonegroup(zone_b.zone, zg_b.name)
+    assert len(entries_a) > 0, \
+        "Zonegroup A datalog should have entries"
+    assert len(entries_b) > 0, \
+        "Zonegroup B datalog should have entries"
 
-    # trim zone B's per-zone datalog on zone A (zone B already synced)
-    status_b = datalog_status_zone(zone_a, zone_b.name)
+    # wait for sync within each zonegroup
+    zonegroup_data_checkpoint(zg_a_conns)
+    zonegroup_data_checkpoint(zg_b_conns)
+
+    # trim zonegroup A's datalog
+    status_a = datalog_status_zonegroup(zone_a.zone, zg_a.name)
+    for shard_id, shard_status in enumerate(status_a):
+        marker = shard_status.get('marker', '')
+        if marker:
+            datalog_trim_zonegroup(zone_a.zone, zg_a.name, shard_id, marker)
+
+    # verify zonegroup A's entries are gone
+    entries_a_after = datalog_list_zonegroup(zone_a.zone, zg_a.name)
+    assert len(entries_a_after) == 0, \
+        "Zonegroup A entries should be trimmed"
+
+    # verify zonegroup B's entries are unchanged
+    entries_b_after = datalog_list_zonegroup(zone_b.zone, zg_b.name)
+    assert len(entries_b_after) > 0, \
+        "Zonegroup B entries must survive zonegroup A's trim"
+
+    # now trim zonegroup B's datalog and verify its entries are gone
+    status_b = datalog_status_zonegroup(zone_b.zone, zg_b.name)
     for shard_id, shard_status in enumerate(status_b):
         marker = shard_status.get('marker', '')
         if marker:
-            datalog_trim_zone(zone_a, zone_b.name, shard_id, marker)
+            datalog_trim_zonegroup(zone_b.zone, zg_b.name, shard_id, marker)
 
-    # zone B's entries should be gone after the trim
-    entries_b_after = datalog_list_zone(zone_a, zone_b.name)
-    assert len(entries_b_after) == 0, \
-        "Zone B entries should be trimmed"
-
-    # zone C's entries must still be there after zone B's trim
-    entries_c_after = datalog_list_zone(zone_a, zone_c.name)
-    assert len(entries_c_after) > 0, \
-        "Zone C entries must survive zone B's trim"
-
-    # --- bring zone C back and verify it catches up ---
-    zone_c.start()
-    # zone C missed the metadata for the bucket while it was down
-    zone_meta_checkpoint(zone_c)
-    zone_bucket_checkpoint(zone_c, zone_a, bucket_name)
-
-    # now that zone C has synced, trim its datalog and verify entries are gone
-    status_c = datalog_status_zone(zone_a, zone_c.name)
-    for shard_id, shard_status in enumerate(status_c):
-        marker = shard_status.get('marker', '')
-        if marker:
-            datalog_trim_zone(zone_a, zone_c.name, shard_id, marker)
-
-    entries_c_final = datalog_list_zone(zone_a, zone_c.name)
-    assert len(entries_c_final) == 0, \
-        "Zone C entries should be trimmed after sync and trim"
+    entries_b_final = datalog_list_zonegroup(zone_b.zone, zg_b.name)
+    assert len(entries_b_final) == 0, \
+        "Zonegroup B entries should be trimmed"
 
 def test_multi_zone_redirect():
     zonegroup = realm.master_zonegroup()

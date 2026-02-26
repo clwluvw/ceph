@@ -654,7 +654,7 @@ void RGWOp_BILog_Delete::execute(optional_yield y) {
 
 void RGWOp_DATALog_List::execute(optional_yield y) {
   string   shard = s->info.args.get("id");
-  string   zone_id_str = s->info.args.get("zone-id");
+  string   zonegroup_id_str = s->info.args.get("rgwx-zonegroup");
 
   string   max_entries_str = s->info.args.get("max-entries"),
            marker = s->info.args.get("marker"),
@@ -693,21 +693,21 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   auto datalog = store->svc()->datalog_rados;
 
-  if (!zone_id_str.empty()) {
-    // Per-zone datalog query
-    rgw_zone_id zone_id{zone_id_str};
+  if (datalog->has_zonegroup_backends() && !zonegroup_id_str.empty()) {
+    // Per-zonegroup datalog query
+    std::string zonegroup_id{zonegroup_id_str};
     op_ret = rgw::run_coro(
       this, store->get_io_context(),
-      datalog->list_entries(this, zone_id, shard_id, max_entries, marker),
+      datalog->list_entries(this, zonegroup_id, shard_id, max_entries, marker),
       std::tie(entries, last_marker, truncated),
-      "RGWDataChangesLog::list_entries(zone)", y);
+      "RGWDataChangesLog::list_entries(zonegroup)", y);
     if (op_ret < 0) return;
 
     RGWDataChangesLogInfo info;
     op_ret = rgw::run_coro(
       this, store->get_io_context(),
-      datalog->get_info(this, zone_id, shard_id),
-      info, "RGWDataChangesLog::get_info(zone)", y);
+      datalog->get_info(this, zonegroup_id, shard_id),
+      info, "RGWDataChangesLog::get_info(zonegroup)", y);
     last_update = info.last_update;
   } else {
     // Legacy datalog query
@@ -775,7 +775,7 @@ void RGWOp_DATALog_Info::send_response() {
 
 void RGWOp_DATALog_ShardInfo::execute(optional_yield y) {
   string shard = s->info.args.get("id");
-  string zone_id_str = s->info.args.get("zone-id");
+  string zonegroup_id_str = s->info.args.get("rgwx-zonegroup");
   string err;
 
   unsigned shard_id = (unsigned)strict_strtol(shard.c_str(), 10, &err);
@@ -788,11 +788,11 @@ void RGWOp_DATALog_ShardInfo::execute(optional_yield y) {
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   auto datalog = store->svc()->datalog_rados;
 
-  if (!zone_id_str.empty()) {
-    rgw_zone_id zone_id{zone_id_str};
+  if (datalog->has_zonegroup_backends() && !zonegroup_id_str.empty()) {
+    std::string zonegroup_id{zonegroup_id_str};
     op_ret = rgw::run_coro(this, store->get_io_context(),
-                          datalog->get_info(this, zone_id, shard_id),
-                          info, "RGWDataChangesLog::get_info(zone)", y);
+                          datalog->get_info(this, zonegroup_id, shard_id),
+                          info, "RGWDataChangesLog::get_info(zonegroup)", y);
   } else {
     op_ret = rgw::run_coro(this, store->get_io_context(),
                           datalog->get_info(this, shard_id),
@@ -910,7 +910,7 @@ void RGWOp_DATALog_Notify2::execute(optional_yield y) {
 void RGWOp_DATALog_Delete::execute(optional_yield y) {
   string   marker = s->info.args.get("marker"),
            shard = s->info.args.get("id"),
-           zone_id_str = s->info.args.get("zone-id"),
+           zonegroup_id_str = s->info.args.get("rgwx-zonegroup"),
            err;
   unsigned shard_id;
 
@@ -950,12 +950,12 @@ void RGWOp_DATALog_Delete::execute(optional_yield y) {
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   auto datalog = store->svc()->datalog_rados;
 
-  if (!zone_id_str.empty()) {
-    rgw_zone_id zone_id{zone_id_str};
+  if (datalog->has_zonegroup_backends() && !zonegroup_id_str.empty()) {
+    std::string zonegroup_id{zonegroup_id_str};
     op_ret = rgw::run_coro(
       this, store->get_io_context(),
-      datalog->trim_entries(this, zone_id, shard_id, marker),
-      "RGWDataChangesLog::trim_entries(zone)", y);
+      datalog->trim_entries(this, zonegroup_id, shard_id, marker),
+      "RGWDataChangesLog::trim_entries(zonegroup)", y);
   } else {
     op_ret = rgw::run_coro(
       this, store->get_io_context(),

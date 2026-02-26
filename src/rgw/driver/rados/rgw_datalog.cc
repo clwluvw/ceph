@@ -140,9 +140,9 @@ public:
 		     RGWDataChangesLog& datalog,
 		     uint64_t gen_id,
                     int num_shards,
-                    std::optional<rgw_zone_id> zone_id = std::nullopt)
+                    std::optional<std::string> zonegroup_id = std::nullopt)
     : RGWDataChangesBE(r, std::move(loc), datalog, gen_id,
-                      std::move(zone_id)) {
+                      std::move(zonegroup_id)) {
     oids.reserve(num_shards);
     for (auto i = 0; i < num_shards; ++i) {
       oids.push_back(get_oid(i));
@@ -283,9 +283,9 @@ public:
 		     RGWDataChangesLog& datalog,
 		     uint64_t gen_id,
                     int num_shards,
-                    std::optional<rgw_zone_id> zone_id = std::nullopt)
+                    std::optional<std::string> zonegroup_id = std::nullopt)
     : RGWDataChangesBE(r, std::move(loc), datalog, gen_id,
-                      std::move(zone_id)),
+                      std::move(zonegroup_id)),
       fifos(num_shards, [&r, &loc, this](std::size_t i, auto emplacer) {
 	emplacer.emplace(r, get_oid(i), loc);
       }) {}
@@ -400,13 +400,13 @@ void DataLogBackends::handle_init(entries_t e) {
 	emplace(gen_id,
 		boost::intrusive_ptr<RGWDataChangesBE>(
                  new RGWDataChangesOmap(rados, loc, datalog, gen_id, shards,
-                                       zone_id)));
+                                       zonegroup_id)));
 	break;
       case log_type::fifo:
 	emplace(gen_id,
 		boost::intrusive_ptr<RGWDataChangesBE>(
                  new RGWDataChangesFIFO(rados, loc, datalog, gen_id, shards,
-                                        zone_id)));
+                                        zonegroup_id)));
 	break;
       default:
 	lderr(datalog.cct)
@@ -448,26 +448,32 @@ void DataLogBackends::handle_empty_to(uint64_t new_tail) {
 int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 			     const RGWZone* zone,
 			     const RGWZoneParams& zoneparams,
+			     const std::string& zonegroup_id,
                             const std::map<rgw_zone_id, RGWRESTConn*>& notify_zones,
                             bool legacy_writes_disabled,
 			     bool background_tasks) noexcept
 {
   log_data = zone->log_data;
-  // Create per-zone logs when there are actual peer zones to sync with
-  target_zone_ids_.clear();
-  if (!notify_zones.empty()) {
-    target_zone_ids_.reserve(notify_zones.size());
+  // Derive per-zonegroup backend list. Currently all peer zones are in
+  // the same zonegroup, so we create one backend keyed by zonegroup ID.
+  // When cross-zonegroup replication is added, each peer zonegroup will
+  // get its own backend.
+  target_zonegroup_ids_.clear();
+  notify_zone_ids_.clear();
+  if (!notify_zones.empty() && !zonegroup_id.empty()) {
+    target_zonegroup_ids_.push_back(zonegroup_id);
+    // Keep per-zone list for notification fan-out
     for (const auto& [zid, _] : notify_zones) {
-      target_zone_ids_.push_back(zid);
+      notify_zone_ids_.push_back(zid);
     }
   }
 
   legacy_writes_disabled_ = legacy_writes_disabled;
   try {
     // Blocking in startup code, not ideal, but won't hurt anything.
-    // Background tasks are NOT started here when per-zone backends
+    // Background tasks are NOT started here when per-zonegroup backends
     // need to be initialized; they'll be started after
-    // init_zone_backends() completes to avoid data races on zone_logs.
+    // init_zonegroup_backends() completes to avoid data races on zonegroup_logs.
     asio::co_spawn(executor,
                   start(dpp, zoneparams.log_pool,
                         background_tasks, background_tasks,
@@ -485,29 +491,29 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
     return ceph::from_exception(std::current_exception());
   }
 
-  // Initialize per-zone backends only when the per_zone_datalog feature
+  // Initialize per-zonegroup backends only when the per_zonegroup_datalog feature
   // is enabled. When disabled, all writes go to the legacy backend.
-  if (legacy_writes_disabled_ && !target_zone_ids_.empty()) {
+  if (legacy_writes_disabled_ && !target_zonegroup_ids_.empty()) {
     auto defbacking = to_log_type(
       cct->_conf.get_val<std::string>("rgw_default_data_log_backing"));
     ceph_assert(defbacking);
     try {
-      init_zone_backends(dpp, *defbacking);
+      init_zonegroup_backends(dpp, *defbacking);
     } catch (const sys::system_error& e) {
       ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
-                        << ": Failed to init per-zone backends: "
+                        << ": Failed to init per-zonegroupgroup backends: "
                         << e.what() << dendl;
       return ceph::from_error_code(e.code());
     } catch (const std::exception& e) {
       ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
-                        << ": Failed to init per-zone backends: "
+                        << ": Failed to init per-zonegroupgroup backends: "
                         << e.what() << dendl;
       return ceph::from_exception(std::current_exception());
     }
 
-    // Now that zone_logs is fully populated, start background tasks.
+    // Now that zonegroup_logs is fully populated, start background tasks.
     // This ensures renew_entries() and recover() see a consistent
-    // zone_logs and can properly handle per-zone backends.
+    // zonegroup_logs and can properly handle per-zonegroup backends.
     if (background_tasks && log_data) {
       try {
        asio::co_spawn(executor,
@@ -593,23 +599,23 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
     throw;
   }
 
-  // NOTE: per-zone backend init is done in the 7-param start() sync
-  // wrapper via init_zone_backends(), not here. Adding any co_await
+  // NOTE: per-zonegroup backend init is done in the 7-param start() sync
+  // wrapper via init_zonegroup_backends(), not here. Adding any co_await
   // to this coroutine triggers GCC coroutine frame corruption.
   //
   // Background tasks (renew, watch, recovery) are started via
-  // start_background() AFTER init_zone_backends() completes, to
-  // avoid data races on zone_logs.
+  // start_background() AFTER init_zonegroup_backends() completes, to
+  // avoid data races on zonegroup_logs.
 
   if (!log_data) {
     co_return;
   }
 
-  // Start background tasks only when there are no per-zone backends
+  // Start background tasks only when there are no per-zonegroup backends
   // to initialize (i.e. the original 4-param start path used by
-  // tests). When per-zone backends exist, the 7-param start()
-  // wrapper calls start_background() after init_zone_backends().
-  if (target_zone_ids_.empty()) {
+  // tests). When per-zonegroup backends exist, the 7-param start()
+  // wrapper calls start_background() after init_zonegroup_backends().
+  if (target_zonegroup_ids_.empty()) {
     co_await start_background(dpp, recovery, watch, renew);
   }
   co_return;
@@ -657,28 +663,28 @@ RGWDataChangesLog::start_background(const DoutPrefixProvider *dpp,
 }
 
 void
-RGWDataChangesLog::init_zone_backends(const DoutPrefixProvider *dpp,
+RGWDataChangesLog::init_zonegroup_backends(const DoutPrefixProvider *dpp,
                                      log_type defbacking)
 {
-  // Initialize each zone's backends via individual co_spawn calls
+  // Initialize each zonegroups' backends via individual co_spawn calls
   // rather than a single coroutine with a loop. This avoids GCC
   // coroutine code generation bugs that corrupt the coroutine frame
   // and cause double-free in string::_M_dispose().
-  for (const auto& zone_id : target_zone_ids_) {
+  for (const auto& zonegroup_id : target_zonegroup_ids_) {
     auto zone_bes = asio::co_spawn(executor,
       logback_generations::init<DataLogBackends>(
-       dpp, *rados, metadata_log_oid(zone_id), loc,
-       [this, zone_id](uint64_t gen_id, int shard) {
-         return get_oid(zone_id, gen_id, shard);
-       }, num_shards, defbacking, *this, zone_id),
+       dpp, *rados, metadata_log_oid(zonegroup_id), loc,
+       [this, zonegroup_id](uint64_t gen_id, int shard) {
+         return get_oid(zonegroup_id, gen_id, shard);
+       }, num_shards, defbacking, *this, zonegroup_id),
       async::use_blocked);
-    ZoneLog zlog;
-    zlog.zone_id = zone_id;
+    ZonegroupLog zlog;
+    zlog.zonegroup_id = zonegroup_id;
     zlog.bes = std::move(zone_bes);
     zlog.semaphores.resize(num_shards);
-    zone_logs.emplace(zone_id, std::move(zlog));
-    ldpp_dout(dpp, 10) << "Initialized per-zone datalog for zone "
-                      << zone_id << dendl;
+    zonegroup_logs.emplace(zonegroup_id, std::move(zlog));
+    ldpp_dout(dpp, 10) << "Initialized per-zonegroup datalog for zonegroup "
+                      << zonegroup_id << dendl;
   }
 }
 
@@ -873,7 +879,7 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
   using shard_entries_t = bc::flat_map<int, std::pair<std::vector<BucketGen>,
                                                      RGWDataChangesBE::entries>>;
   shard_entries_t legacy_m;
-  std::map<rgw_zone_id, shard_entries_t> per_zone_m;
+  std::map<std::string, shard_entries_t> per_zonegroup_m;
 
   std::unique_lock l(lock);
   decltype(cur_cycle) entries;
@@ -882,7 +888,7 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
     unsigned index = choose_oid(bs);
     auto key = BucketGen{bs, gen}.get_key();
     if (legacy_writes_disabled_) {
-      for (auto& [zid, zlog] : zone_logs) {
+      for (auto& [zid, zlog] : zonegroup_logs) {
        zlog.semaphores[index].insert(key);
       }
     } else {
@@ -905,11 +911,11 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
     encode(change, bl);
 
     if (legacy_writes_disabled_) {
-      for (auto& [zid, zlog] : zone_logs) {
+      for (auto& [zid, zlog] : zonegroup_logs) {
        auto zone_be = zlog.bes->head();
-       per_zone_m[zid][index].first.push_back({bs, gen});
+       per_zonegroup_m[zid][index].first.push_back({bs, gen});
        zone_be->prepare(ut, change.key, buffer::list{bl},
-                        per_zone_m[zid][index].second);
+                        per_zonegroup_m[zid][index].second);
       }
     } else {
       auto be = bes->head();
@@ -924,19 +930,19 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
     auto ex = co_await asio::this_coro::executor;
 
     if (legacy_writes_disabled_) {
-      auto group = async::spawn_group(ex, zone_logs.size());
-      for (auto& [zid, zlog] : zone_logs) {
+      auto group = async::spawn_group(ex, zonegroup_logs.size());
+      for (auto& [zid, zlog] : zonegroup_logs) {
        asio::co_spawn(ex, [&, zid = zid, &zlog = zlog]()
                       -> asio::awaitable<void> {
          auto zone_be = zlog.bes->head();
-         for (auto& [index, p] : per_zone_m[zid]) {
+         for (auto& [index, p] : per_zonegroup_m[zid]) {
            auto& [buckets, shard_entries] = p;
            try {
              co_await zone_be->push(dpp, index, std::move(shard_entries));
            } catch (const std::exception& e) {
              push_failed.store(true, std::memory_order_relaxed);
              ldpp_dout(dpp, 5) << "RGWDataChangesLog::renew_entries(): "
-                               << "Per-zone push failed for zone " << zid
+                               << "Per-zonegroup push failed for zonegroup " << zid
                                << ": " << e.what() << dendl;
            }
          }
@@ -974,7 +980,7 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
   // If we didn't error in pushing, we can now decrement the semaphores
   l.lock();
   if (legacy_writes_disabled_) {
-    for (auto& [zid, zlog] : zone_logs) {
+    for (auto& [zid, zlog] : zonegroup_logs) {
       for (auto index = 0u; index < unsigned(num_shards); ++index) {
        using neorados::WriteOp;
        auto& keys = zlog.semaphores[index];
@@ -1073,9 +1079,9 @@ std::string RGWDataChangesLog::get_oid(uint64_t gen_id, int i) const {
 	  fmt::format("{}.{}", prefix, i));
 }
 
-std::string RGWDataChangesLog::get_oid(const rgw_zone_id& zone,
+std::string RGWDataChangesLog::get_oid(const std::string& zonegroup,
                                       uint64_t gen_id, int i) const {
-  auto zone_prefix = fmt::format("data_log.{}", zone.id);
+  auto zone_prefix = fmt::format("data_log.{}", zonegroup);
   return (gen_id > 0 ?
          fmt::format("{}@G{}.{}", zone_prefix, gen_id, i) :
          fmt::format("{}.{}", zone_prefix, i));
@@ -1085,22 +1091,22 @@ std::string RGWDataChangesLog::get_sem_set_oid(int i) const {
   return fmt::format("_sem_set{}.{}", prefix, i);
 }
 
-std::string RGWDataChangesLog::get_sem_set_oid(const rgw_zone_id& zone,
+std::string RGWDataChangesLog::get_sem_set_oid(const std::string& zonegroup,
                                               int i) const {
-  return fmt::format("_sem_setdata_log.{}.{}", zone.id, i);
+  return fmt::format("_sem_setdata_log.{}.{}", zonegroup, i);
 }
 
 std::string RGWDataChangesBE::get_oid(int shard_id) {
-  if (zone_id) {
-    return datalog.get_oid(*zone_id, gen_id, shard_id);
+  if (zonegroup_id) {
+    return datalog.get_oid(*zonegroup_id, gen_id, shard_id);
   }
   return datalog.get_oid(gen_id, shard_id);
 }
 
-std::vector<rgw_zone_id> RGWDataChangesLog::get_zone_ids() const {
-  std::vector<rgw_zone_id> ids;
-  ids.reserve(zone_logs.size());
-  for (const auto& [zid, _] : zone_logs) {
+std::vector<std::string> RGWDataChangesLog::get_zonegroup_ids() const {
+  std::vector<std::string> ids;
+  ids.reserve(zonegroup_logs.size());
+  for (const auto& [zid, _] : zonegroup_logs) {
     ids.push_back(zid);
   }
   return ids;
@@ -1161,7 +1167,7 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
 
     // Failure on push is fatal if we're bypassing semaphores.
     if (legacy_writes_disabled_) {
-      for (auto& [zid, zlog] : zone_logs) {
+      for (auto& [zid, zlog] : zonegroup_logs) {
        auto zone_be = zlog.bes->head();
        zone_be->push(dpp, index, now, change.key, buffer::list{bl}, y);
       }
@@ -1197,7 +1203,7 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
     if (need_sem_set) {
       using neorados::WriteOp;
       if (legacy_writes_disabled_) {
-       for (auto& [zid, zlog] : zone_logs) {
+       for (auto& [zid, zlog] : zonegroup_logs) {
          rados->execute(get_sem_set_oid(zid, index), loc,
                         WriteOp{}.exec(ss::increment(std::string{key})), y);
        }
@@ -1238,7 +1244,7 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
 
   // Failure on push isn't fatal.
   if (legacy_writes_disabled_) {
-    for (auto& [zid, zlog] : zone_logs) {
+    for (auto& [zid, zlog] : zonegroup_logs) {
       try {
        auto zone_be = zlog.bes->head();
        zone_be->push(dpp, index, now, change.key, buffer::list{bl}, y);
@@ -1610,7 +1616,7 @@ void RGWDataChangesLog::blocking_shutdown()
     bes->shutdown();
     bes.reset();
   }
-  for (auto& [zid, zlog] : zone_logs) {
+  for (auto& [zid, zlog] : zonegroup_logs) {
     if (zlog.bes) {
       zlog.bes->shutdown();
       zlog.bes.reset();
@@ -1699,12 +1705,14 @@ void RGWDataChangesLog::mark_modified(int shard_id, const rgw_bucket_shard& bs, 
   {
     std::shared_lock rl{modified_lock}; // read lock to check for existence
     if (legacy_writes_disabled_) {
+      // Check any one zone's modified shards (all zones in the same
+      // zonegroup receive identical entries)
       for (const auto& [_, zone_shards] : zone_modified_shards) {
        auto zshard = zone_shards.find(shard_id);
        if (zshard != zone_shards.end() && zshard->second.count(entry)) {
          return;
        }
-       break; // all zones receive identical entries, check one
+       break;
       }
     } else {
       auto shard = modified_shards.find(shard_id);
@@ -1716,7 +1724,9 @@ void RGWDataChangesLog::mark_modified(int shard_id, const rgw_bucket_shard& bs, 
 
   std::unique_lock wl{modified_lock}; // write lock for insertion
   if (legacy_writes_disabled_) {
-    for (const auto& [zid, _] : zone_logs) {
+    // Fan out to each peer zone for notification (all zones in the
+    // zonegroup get the same modified shard content)
+    for (const auto& zid : notify_zone_ids_) {
       zone_modified_shards[zid][shard_id].insert(entry);
     }
   } else {
@@ -1742,20 +1752,20 @@ RGWDataChangesLog::trim_generations(const DoutPrefixProvider *dpp,
   co_return co_await bes->trim_generations(dpp, through);
 }
 
-// --- Per-zone API overloads ---
+// --- Per-zonegroup API overloads ---
 
 asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
                           std::string, bool>>
 RGWDataChangesLog::list_entries(const DoutPrefixProvider* dpp,
-                               const rgw_zone_id& zone,
+                               const std::string& zonegroup,
                                int shard, int max_entries,
                                std::string marker)
 {
-  auto it = zone_logs.find(zone);
-  if (it == zone_logs.end()) {
+  auto it = zonegroup_logs.find(zonegroup);
+  if (it == zonegroup_logs.end()) {
     throw sys::system_error{
       ENOENT, sys::generic_category(),
-      fmt::format("No per-zone datalog for zone {}", zone.id)};
+      fmt::format("No per-zonegroup datalog for zonegroup {}", zonegroup)};
   }
   if (shard >= num_shards) [[unlikely]] {
     throw sys::system_error{
@@ -1778,14 +1788,14 @@ RGWDataChangesLog::list_entries(const DoutPrefixProvider* dpp,
 asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
                           RGWDataChangesLogMarker, bool>>
 RGWDataChangesLog::list_entries(const DoutPrefixProvider* dpp,
-                               const rgw_zone_id& zone,
+                               const std::string& zonegroup,
                                int max_entries, RGWDataChangesLogMarker marker)
 {
-  auto it = zone_logs.find(zone);
-  if (it == zone_logs.end()) {
+  auto it = zonegroup_logs.find(zonegroup);
+  if (it == zonegroup_logs.end()) {
     throw sys::system_error{
       ENOENT, sys::generic_category(),
-      fmt::format("No per-zone datalog for zone {}", zone.id)};
+      fmt::format("No per-zonegroup datalog for zonegroup {}", zonegroup)};
   }
   if (max_entries <= 0) {
     co_return std::make_tuple(std::vector<rgw_data_change_log_entry>{},
@@ -1819,13 +1829,13 @@ RGWDataChangesLog::list_entries(const DoutPrefixProvider* dpp,
 
 asio::awaitable<RGWDataChangesLogInfo>
 RGWDataChangesLog::get_info(const DoutPrefixProvider* dpp,
-                           const rgw_zone_id& zone, int shard_id)
+                           const std::string& zonegroup, int shard_id)
 {
-  auto it = zone_logs.find(zone);
-  if (it == zone_logs.end()) {
+  auto it = zonegroup_logs.find(zonegroup);
+  if (it == zonegroup_logs.end()) {
     throw sys::system_error{
       ENOENT, sys::generic_category(),
-      fmt::format("No per-zone datalog for zone {}", zone.id)};
+      fmt::format("No per-zonegroup datalog for zonegroup {}", zonegroup)};
   }
   if (shard_id >= num_shards) [[unlikely]] {
     throw sys::system_error{EINVAL, sys::generic_category(),
@@ -1843,14 +1853,14 @@ RGWDataChangesLog::get_info(const DoutPrefixProvider* dpp,
 
 asio::awaitable<void>
 RGWDataChangesLog::trim_entries(const DoutPrefixProvider* dpp,
-                               const rgw_zone_id& zone,
+                               const std::string& zonegroup,
                                int shard_id, std::string_view marker)
 {
-  auto it = zone_logs.find(zone);
-  if (it == zone_logs.end()) {
+  auto it = zonegroup_logs.find(zonegroup);
+  if (it == zonegroup_logs.end()) {
     throw sys::system_error{
       ENOENT, sys::generic_category(),
-      fmt::format("No per-zone datalog for zone {}", zone.id)};
+      fmt::format("No per-zonegroup datalog for zonegroup {}", zonegroup)};
   }
   if (shard_id >= num_shards) [[unlikely]] {
     throw sys::system_error{EINVAL, sys::generic_category(),
@@ -1862,38 +1872,38 @@ RGWDataChangesLog::trim_entries(const DoutPrefixProvider* dpp,
 }
 
 void RGWDataChangesLog::trim_entries(const DoutPrefixProvider* dpp,
-                                    const rgw_zone_id& zone,
+                                    const std::string& zonegroup,
                                     int shard_id, std::string_view marker,
                                     librados::AioCompletion* c)
 {
   asio::co_spawn(rados->get_executor(),
-                trim_entries(dpp, zone, shard_id, marker),
+                trim_entries(dpp, zonegroup, shard_id, marker),
                 c);
 }
 
 asio::awaitable<void>
 RGWDataChangesLog::trim_generations(const DoutPrefixProvider* dpp,
-                                   const rgw_zone_id& zone,
+                                   const std::string& zonegroup,
                                    std::optional<uint64_t>& through)
 {
-  auto it = zone_logs.find(zone);
-  if (it == zone_logs.end()) {
+  auto it = zonegroup_logs.find(zonegroup);
+  if (it == zonegroup_logs.end()) {
     throw sys::system_error{
       ENOENT, sys::generic_category(),
-      fmt::format("No per-zone datalog for zone {}", zone.id)};
+      fmt::format("No per-zonegroup datalog for zonegroup {}", zonegroup)};
   }
   co_return co_await it->second.bes->trim_generations(dpp, through);
 }
 
 asio::awaitable<void>
 RGWDataChangesLog::change_format(const DoutPrefixProvider* dpp,
-                                const rgw_zone_id& zone, log_type type)
+                                const std::string& zonegroup, log_type type)
 {
-  auto it = zone_logs.find(zone);
-  if (it == zone_logs.end()) {
+  auto it = zonegroup_logs.find(zonegroup);
+  if (it == zonegroup_logs.end()) {
     throw sys::system_error{
       ENOENT, sys::generic_category(),
-      fmt::format("No per-zone datalog for zone {}", zone.id)};
+      fmt::format("No per-zonegroup datalog for zonegroup {}", zonegroup)};
   }
   co_return co_await it->second.bes->new_backing(dpp, type);
 }
@@ -2032,14 +2042,14 @@ RGWDataChangesLog::decrement_sems(
   }
 }
 
-// Per-zone recovery methods
+// Per-zonegroup recovery methods
 asio::awaitable<std::pair<bc::flat_map<std::string, uint64_t>, std::string>>
-RGWDataChangesLog::read_sems(const rgw_zone_id& zone, int index,
+RGWDataChangesLog::read_sems(const std::string& zonegroup, int index,
                             std::string cursor) {
   bc::flat_map<std::string, uint64_t> out;
   try {
     co_await rados->execute(
-      get_sem_set_oid(zone, index), loc,
+      get_sem_set_oid(zonegroup, index), loc,
       neorados::ReadOp{}.exec(ss::list(sem_max_keys, std::move(cursor),
                                       &out, &cursor)),
       nullptr, asio::use_awaitable);
@@ -2054,14 +2064,14 @@ RGWDataChangesLog::read_sems(const rgw_zone_id& zone, int index,
 asio::awaitable<bool>
 RGWDataChangesLog::synthesize_entries(
   const DoutPrefixProvider* dpp,
-  const rgw_zone_id& zone,
+  const std::string& zonegroup,
   int index,
   const bc::flat_map<std::string, uint64_t>& semcount)
 {
-  auto it = zone_logs.find(zone);
-  if (it == zone_logs.end()) {
+  auto it = zonegroup_logs.find(zonegroup);
+  if (it == zonegroup_logs.end()) {
     ldpp_dout(dpp, 5) << "RGWDataChangesLog::synthesize_entries(): "
-                     << "No per-zone datalog for zone " << zone << dendl;
+                     << "No per-zonegroup datalog for zonegroup " << zonegroup << dendl;
     co_return false;
   }
   const auto timestamp = real_clock::now();
@@ -2082,7 +2092,7 @@ RGWDataChangesLog::synthesize_entries(
       be->prepare(timestamp, change.key, std::move(bl), batch);
     } catch (const sys::system_error& e) {
       push_failed = true;
-      ldpp_dout(dpp, -1) << "RGWDataChangesLog::synthesize_entries(zone): "
+      ldpp_dout(dpp, -1) << "RGWDataChangesLog::synthesize_entries(zonegroup): "
                         << "Unable to parse BucketGen key: " << key
                         << " Got exception: " << e.what() << dendl;
     }
@@ -2091,7 +2101,7 @@ RGWDataChangesLog::synthesize_entries(
     co_await be->push(dpp, index, std::move(batch));
   } catch (const std::exception& e) {
     push_failed = true;
-    ldpp_dout(dpp, 5) << "RGWDataChangesLog::synthesize_entries(zone): "
+    ldpp_dout(dpp, 5) << "RGWDataChangesLog::synthesize_entries(zonegroup): "
                      << "Backend push failed with exception: "
                      << e.what() << dendl;
   }
@@ -2100,7 +2110,7 @@ RGWDataChangesLog::synthesize_entries(
 
 asio::awaitable<void>
 RGWDataChangesLog::decrement_sems(
-  const rgw_zone_id& zone, int index,
+  const std::string& zonegroup, int index,
   ceph::mono_time fetch_time,
   bc::flat_map<std::string, uint64_t>&& semcount)
 {
@@ -2114,48 +2124,48 @@ RGWDataChangesLog::decrement_sems(
     }
     auto grace = ((ceph::mono_clock::now() - fetch_time) * 4) / 3;
     co_await rados->execute(
-      get_sem_set_oid(zone, index), loc, neorados::WriteOp{}.exec(
+      get_sem_set_oid(zonegroup, index), loc, neorados::WriteOp{}.exec(
        ss::decrement(std::move(batch), grace)),
       asio::use_awaitable);
   }
 }
 
 asio::awaitable<void>
-RGWDataChangesLog::recover_zone_shard(const DoutPrefixProvider* dpp,
-                                     const rgw_zone_id& zone, int index)
+RGWDataChangesLog::recover_zonegroup_shard(const DoutPrefixProvider* dpp,
+                                     const std::string& zonegroup, int index)
 {
   std::string cursor;
   do {
     bc::flat_map<std::string, uint64_t> semcount;
 
     auto fetch_time = ceph::mono_clock::now();
-    std::tie(semcount, cursor) = co_await read_sems(zone, index,
+    std::tie(semcount, cursor) = co_await read_sems(zonegroup, index,
                                                    std::move(cursor));
     if (semcount.empty()) {
       break;
     }
 
-    auto pushed = co_await synthesize_entries(dpp, zone, index, semcount);
+    auto pushed = co_await synthesize_entries(dpp, zonegroup, index, semcount);
     if (!pushed) {
-      ldpp_dout(dpp, 5) << "RGWDataChangesLog::recover_zone_shard(): "
-                       << "Pushing zone=" << zone << " shard=" << index
+      ldpp_dout(dpp, 5) << "RGWDataChangesLog::recover_zonegroup_shard(): "
+                       << "Pushing zonegroup=" << zonegroup << " shard=" << index
                        << " failed, skipping decrement" << dendl;
       continue;
     }
 
-    // For per-zone recovery, use the per-zone sem_set OID for coordination.
+    // For per-zone recovery, use the per-zonegroup sem_set OID for coordination.
     // We use gather_working_sets on the legacy OID since all gateways
     // share the same coordination channel. The per-zone semaphores track
     // the same keys, so the working set check is still valid.
     auto notified = co_await gather_working_sets(dpp, index, semcount);
     if (!notified) {
-      ldpp_dout(dpp, 5) << "RGWDataChangesLog::recover_zone_shard(): "
-                       << "Gathering working sets for zone=" << zone
+      ldpp_dout(dpp, 5) << "RGWDataChangesLog::recover_zonegroup_shard(): "
+                       << "Gathering working sets for zonegroup=" << zonegroup
                        << " shard=" << index
                        << " failed, skipping decrement" << dendl;
       continue;
     }
-    co_await decrement_sems(zone, index, fetch_time, std::move(semcount));
+    co_await decrement_sems(zonegroup, index, fetch_time, std::move(semcount));
   } while (!cursor.empty());
   co_return;
 }
@@ -2209,16 +2219,16 @@ asio::awaitable<void> RGWDataChangesLog::recover(
       auto ex = recovery_strand;
       // Legacy shards + per-zone shards
       auto total = static_cast<size_t>(num_shards) *
-                  (1 + zone_logs.size());
+                  (1 + zonegroup_logs.size());
       auto group = async::spawn_group{ex, total};
       // Recover legacy shards
       for (auto i = 0; i < num_shards; ++i) {
 	boost::asio::co_spawn(ex, recover_shard(dpp, i), group);
       }
       // Recover per-zone shards
-      for (const auto& [zid, _] : zone_logs) {
+      for (const auto& [zid, _] : zonegroup_logs) {
        for (auto i = 0; i < num_shards; ++i) {
-         boost::asio::co_spawn(ex, recover_zone_shard(dpp, zid, i), group);
+         boost::asio::co_spawn(ex, recover_zonegroup_shard(dpp, zid, i), group);
        }
       }
       co_await group.wait();
